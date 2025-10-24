@@ -1,9 +1,20 @@
+@file:Suppress("MemberVisibilityCanBePrivate")
+
 package com.siq.detector.camera
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import androidx.annotation.VisibleForTesting
 import androidx.camera.core.ImageProxy
 import kotlin.math.max
+
+@VisibleForTesting
+internal object YuvIndex {
+    @JvmStatic
+    fun chromaIndex(row: Int, col: Int, rowStride: Int, pixelStride: Int): Int {
+        return rowStride * (row / 2) + (col / 2) * pixelStride
+    }
+}
 
 class YuvToRgbConverter {
     private var yBuffer = ByteArray(0)
@@ -40,18 +51,19 @@ class YuvToRgbConverter {
         }
 
         val yRowStride = yPlane.rowStride
-        val uvRowStride = uPlane.rowStride
+        val uRowStride = uPlane.rowStride
         val uPixelStride = uPlane.pixelStride
+
+        val vRowStride = vPlane.rowStride
         val vPixelStride = vPlane.pixelStride
 
         var offset = 0
         for (row in 0 until height) {
             val yRow = yRowStride * row
-            val uvRow = uvRowStride * (row / 2)
             for (col in 0 until width) {
                 val yVal = (yBuffer[yRow + col].toInt() and 0xFF)
-                val uIndex = uvRow + (col / 2) * uPixelStride
-                val vIndex = uvRow + (col / 2) * vPixelStride
+                val uIndex = YuvIndex.chromaIndex(row, col, uRowStride, uPixelStride)
+                val vIndex = YuvIndex.chromaIndex(row, col, vRowStride, vPixelStride)
                 val uVal = (uBuffer[uIndex].toInt() and 0xFF)
                 val vVal = (vBuffer[vIndex].toInt() and 0xFF)
                 outBuffer[offset++] = yuvToRgbPixel(yVal, uVal, vVal)
