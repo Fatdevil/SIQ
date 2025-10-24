@@ -12,9 +12,12 @@ from cv_engine.tracking.base import Detection, TrackedDetection
 from cv_engine.tracking.factory import create_tracker
 from metrics import angle, ball, carry_v1, club
 from server.testing import MiniAPI
+from server import ar_targets
 
 app = MiniAPI()
 
+telemetry_broker = ar_targets.TelemetryBroker()
+target_run_store = ar_targets.TargetRunStore()
 
 @dataclass
 class TrackPoint:
@@ -139,3 +142,31 @@ def analyze_back_view(payload: Dict[str, object], headers: Dict[str, str]) -> Di
         "quality": quality,
         "sourceHints": source_hints,
     }
+
+
+@app.post("/score/hit")
+def record_target_hit(payload, headers):
+    if not ar_targets.is_enabled():
+        return {"status": "disabled", "reason": "AR targets disabled"}
+
+    hit = ar_targets.parse_hit_payload(payload)
+    summary = target_run_store.add_hit(hit)
+
+    telemetry_broker.emit("ar.targets.hit", {
+        "targetId": hit.target_id,
+        "hitPoint2D": list(hit.hit_point_2d),
+        "hitPoint3D": list(hit.hit_point_3d),
+        "score": hit.score,
+        "runId": hit.run_id,
+    })
+
+    return {
+        "status": "ok",
+        "mode": ar_targets.mode(),
+        "run": summary.to_dict(),
+    }
+
+
+@app.post("/ws/telemetry")
+def post_telemetry(payload, headers):
+    return telemetry_broker.emit("telemetry", payload)
