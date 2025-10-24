@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.UI;
 using UnityEngine.XR.ARFoundation;
+
+[assembly: InternalsVisibleTo("Assembly-CSharp-Editor")]
 
 namespace SIQ.ARHUD
 {
@@ -67,6 +70,7 @@ namespace SIQ.ARHUD
         private GameObject? _spawnedTarget;
         private Renderer? _targetRenderer;
         private Bounds _targetBounds;
+        private Bounds _targetLocalBounds = new(Vector3.zero, Vector3.zero);
         private float _lastQuality;
         private Pose? _lastPose;
         private IAprilTagPoseSource? _aprilTagSource;
@@ -230,6 +234,8 @@ namespace SIQ.ARHUD
                 _targetBounds = _targetRenderer.bounds;
             }
 
+            _targetLocalBounds = ResolveLocalBounds(_spawnedTarget.transform);
+
             onAnchorPlaced.Invoke();
         }
 
@@ -269,19 +275,12 @@ namespace SIQ.ARHUD
 
             polygon.Clear();
 
-            var localCorners = new[]
-            {
-                new Vector3(-0.5f, -0.5f, 0f),
-                new Vector3(-0.5f, 0.5f, 0f),
-                new Vector3(0.5f, 0.5f, 0f),
-                new Vector3(0.5f, -0.5f, 0f),
-            };
+            var localBounds = _targetLocalBounds.size == Vector3.zero
+                ? ResolveLocalBounds(transform)
+                : _targetLocalBounds;
 
-            foreach (var corner in localCorners)
-            {
-                var worldCorner = transform.TransformPoint(corner * (_targetBounds.size.magnitude > 0 ? _targetBounds.size.magnitude : 1f));
-                polygon.Add(camera.WorldToScreenPoint(worldCorner));
-            }
+            var projected = WorldRectToScreenPolygon(transform, localBounds, camera);
+            polygon.AddRange(projected);
 
             return polygon.Count == 4;
         }
@@ -296,6 +295,106 @@ namespace SIQ.ARHUD
 
             plane = new Plane(TargetTransform.up, TargetTransform.position);
             return true;
+        }
+
+        private static Bounds ResolveLocalBounds(Transform target)
+        {
+            var meshFilter = target.GetComponent<MeshFilter>();
+            if (meshFilter != null && meshFilter.sharedMesh != null)
+            {
+                return meshFilter.sharedMesh.bounds;
+            }
+
+            var renderer = target.GetComponent<Renderer>() ?? target.GetComponentInChildren<Renderer>();
+            if (renderer == null)
+            {
+                return new Bounds(Vector3.zero, Vector3.one);
+            }
+
+            return ApproximateLocalBoundsFromRenderer(target, renderer);
+        }
+
+        private static Bounds ApproximateLocalBoundsFromRenderer(Transform target, Renderer renderer)
+        {
+            var worldBounds = renderer != null ? renderer.bounds : new Bounds(target.position, Vector3.one);
+            var right = target.right.normalized;
+            var up = target.up.normalized;
+
+            var corners = new Vector3[]
+            {
+                worldBounds.center + new Vector3(+worldBounds.extents.x, +worldBounds.extents.y, +worldBounds.extents.z),
+                worldBounds.center + new Vector3(+worldBounds.extents.x, +worldBounds.extents.y, -worldBounds.extents.z),
+                worldBounds.center + new Vector3(+worldBounds.extents.x, -worldBounds.extents.y, +worldBounds.extents.z),
+                worldBounds.center + new Vector3(+worldBounds.extents.x, -worldBounds.extents.y, -worldBounds.extents.z),
+                worldBounds.center + new Vector3(-worldBounds.extents.x, +worldBounds.extents.y, +worldBounds.extents.z),
+                worldBounds.center + new Vector3(-worldBounds.extents.x, +worldBounds.extents.y, -worldBounds.extents.z),
+                worldBounds.center + new Vector3(-worldBounds.extents.x, -worldBounds.extents.y, +worldBounds.extents.z),
+                worldBounds.center + new Vector3(-worldBounds.extents.x, -worldBounds.extents.y, -worldBounds.extents.z),
+            };
+
+            float minR = float.PositiveInfinity;
+            float maxR = float.NegativeInfinity;
+            float minU = float.PositiveInfinity;
+            float maxU = float.NegativeInfinity;
+
+            foreach (var corner in corners)
+            {
+                var toCorner = corner - target.position;
+                var projectedRight = Vector3.Dot(toCorner, right);
+                var projectedUp = Vector3.Dot(toCorner, up);
+                minR = Mathf.Min(minR, projectedRight);
+                maxR = Mathf.Max(maxR, projectedRight);
+                minU = Mathf.Min(minU, projectedUp);
+                maxU = Mathf.Max(maxU, projectedUp);
+            }
+
+            var safeScaleX = Mathf.Max(1e-6f, target.lossyScale.x);
+            var safeScaleY = Mathf.Max(1e-6f, target.lossyScale.y);
+
+            var sizeX = Mathf.Max(0.001f, (maxR - minR) / safeScaleX);
+            var sizeY = Mathf.Max(0.001f, (maxU - minU) / safeScaleY);
+
+            return new Bounds(Vector3.zero, new Vector3(sizeX, sizeY, 0.001f));
+        }
+
+        /// <summary>
+        /// Computes the four local-space corners of the target quad using per-axis extents. Avoids diagonal-based scaling
+        /// because Renderer.bounds.size.magnitude overestimates the footprint and causes hit leakage.
+        /// </summary>
+        /// <param name="target">Target transform providing lossy scale.</param>
+        /// <param name="localMeshBounds">Mesh bounds in local space.</param>
+        internal static Vector3[] BuildLocalRectCorners(Transform target, Bounds localMeshBounds)
+        {
+            var halfWidth = localMeshBounds.extents.x * target.lossyScale.x;
+            var halfHeight = localMeshBounds.extents.y * target.lossyScale.y;
+
+            return new[]
+            {
+                new Vector3(-halfWidth, -halfHeight, 0f),
+                new Vector3(-halfWidth,  halfHeight, 0f),
+                new Vector3( halfWidth,  halfHeight, 0f),
+                new Vector3( halfWidth, -halfHeight, 0f),
+            };
+        }
+
+        /// <summary>
+        /// Projects the target quad to screen space using per-axis extents derived from the mesh bounds to preserve
+        /// the true rectangle footprint under arbitrary scale/rotation.
+        /// </summary>
+        /// <param name="target">Transform anchoring the target.</param>
+        /// <param name="localMeshBounds">Mesh bounds in local coordinates.</param>
+        /// <param name="camera">Camera used for projection.</param>
+        internal static List<Vector2> WorldRectToScreenPolygon(Transform target, Bounds localMeshBounds, Camera camera)
+        {
+            var localCorners = BuildLocalRectCorners(target, localMeshBounds);
+            var polygon = new List<Vector2>(localCorners.Length);
+            for (int i = 0; i < localCorners.Length; i++)
+            {
+                var worldCorner = target.TransformPoint(localCorners[i]);
+                polygon.Add((Vector2)camera.WorldToScreenPoint(worldCorner));
+            }
+
+            return polygon;
         }
     }
 }

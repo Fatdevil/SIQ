@@ -55,3 +55,13 @@ The `HitDetector` projects the target mesh into screen space and checks the inco
 - Test under indoor and outdoor lighting; verify the target stays stable for at least 30 seconds.
 
 For further debugging, enable verbose logging in the Unity console and capture screen recordings during range sessions.
+
+## Screen Polygon Correctness
+
+Accurate hit detection depends on matching the screen-space polygon to the rendered target mesh. Early prototypes scaled the cor
+ners using `Renderer.bounds.size.magnitude` (the world-space diagonal of the axis-aligned bounding box), which inflated the hit 
+polygon by ~40% for a square target and let stray shots register as hits. The current flow derives half-extents per axis from th
+e prefab’s local mesh bounds and multiplies them by the transform’s `lossyScale`, preserving the real footprint even under rota
+tion or non-uniform scale. When a mesh filter is unavailable, the bounds are approximated by projecting the renderer’s world AAB
+B onto the target’s local right/up vectors before projecting into screen space.
+
