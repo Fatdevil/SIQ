@@ -6,10 +6,14 @@ from typing import Iterable
 
 import pytest
 
+try:  # pragma: no cover - dependency availability varies in tests
+    from fastapi.testclient import TestClient
+except ModuleNotFoundError:  # pragma: no cover - fallback for lightweight test envs
+    from server.testing import TestClient  # type: ignore
+
 from opentelemetry import trace
 
 from server.main import BackAnalyzeRequest, _to_detections, app, create_tracker
-from server.testing import TestClient
 from siq.observability import FRAME_INFERENCE_HISTOGRAM
 
 
