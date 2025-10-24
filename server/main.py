@@ -13,8 +13,24 @@ from cv_engine.tracking.base import Detection, TrackedDetection
 from cv_engine.tracking.factory import create_tracker
 from metrics import angle, ball, carry_v1, club
 from opentelemetry import trace
+from fastapi import HTTPException, status
+
+from server.schemas.coach import (
+    CoachChatBody,
+    CoachWeeklySummaryBody,
+    ValidationError as CoachValidationError,
+)
 from server.testing import MiniAPI
 from server import ar_targets
+from siq.coach import (
+    CoachChatRequest,
+    CoachResponder,
+    PersonaProfile,
+    PersonaPreferenceStore,
+    PersonaRegistry,
+    RunHistory,
+    WeeklySummaryJob,
+)
 from siq.observability import cv_stage, record_frame_inference
 
 app = MiniAPI()
@@ -22,7 +38,28 @@ app = MiniAPI()
 telemetry_broker = ar_targets.TelemetryBroker()
 target_run_store = ar_targets.TargetRunStore()
 
+_persona_registry = PersonaRegistry()
+_persona_store = PersonaPreferenceStore(_persona_registry)
+coach_responder = CoachResponder(
+    preferences=_persona_store,
+    registry=_persona_registry,
+)
+run_history = RunHistory()
+weekly_summary_job = WeeklySummaryJob(run_history, registry=_persona_registry)
+
 _TRACER = trace.get_tracer("siq.cv")
+
+
+def _resolve_persona_or_422(user_id: str, persona_alias: str | None) -> PersonaProfile:
+    try:
+        if persona_alias:
+            return _persona_store.set_preference(user_id, str(persona_alias))
+        return _persona_store.get_preference(user_id)
+    except ValueError:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": "unknown persona"},
+        )
 
 @dataclass
 class TrackPoint:
@@ -184,6 +221,62 @@ def analyze_back_view(payload: Dict[str, object], headers: Dict[str, str]) -> Di
             "quality": quality,
             "sourceHints": source_hints,
         }
+
+
+@app.post("/coach/chat")
+def coach_chat(payload: Dict[str, object], headers: Dict[str, str]) -> Dict[str, object]:
+    try:
+        body = CoachChatBody.parse_obj(payload)
+    except CoachValidationError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": str(exc)},
+        )
+
+    persona_profile = _resolve_persona_or_422(body.userId, body.persona)
+
+    try:
+        request_payload: Dict[str, object] = {
+            "userId": body.userId,
+            "message": body.message,
+        }
+        if body.persona is not None:
+            request_payload["persona"] = body.persona
+        if body.history is not None:
+            request_payload["history"] = body.history
+        request = CoachChatRequest.from_dict(request_payload)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": str(exc) or "invalid payload"},
+        )
+
+    response = coach_responder.reply(request)
+    response.setdefault("persona", persona_profile.label)
+    return response
+
+
+@app.post("/coach/weekly-summary")
+def coach_weekly_summary(payload: Dict[str, object], headers: Dict[str, str]) -> Dict[str, object]:
+    try:
+        body = CoachWeeklySummaryBody.parse_obj(payload)
+    except CoachValidationError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": str(exc)},
+        )
+
+    persona_profile = _resolve_persona_or_422(body.userId, body.persona)
+
+    try:
+        summary = weekly_summary_job.summarize(body.userId, persona_profile.key, body.lastN)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": str(exc) or "invalid request"},
+        )
+
+    return {"status": "ok", "persona": persona_profile.label, "summary": summary}
 
 
 @app.post("/score/hit")
