@@ -1,0 +1,51 @@
+name: Unity Tests
+
+on:
+  push:
+    paths:
+      - 'mobile/unity/**'
+  pull_request:
+    paths:
+      - 'mobile/unity/**'
+
+jobs:
+  tests:
+    name: Run Unity edit-mode tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Early exit if no Unity license
+        id: check_license
+        run: |
+          if [ -z "${{ secrets.UNITY_LICENSE }}" ]; then
+            echo "No UNITY_LICENSE secret – skipping Unity tests."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Setup cache
+        if: steps.check_license.outputs.skip != 'true'
+        uses: actions/cache@v4
+        with:
+          path: mobile/unity/Library
+          key: unity-lib-${{ runner.os }}-${{ hashFiles('mobile/unity/Packages/manifest.json') }}
+          restore-keys: |
+            unity-lib-${{ runner.os }}-
+
+      - name: Run Unity Test Runner
+        if: steps.check_license.outputs.skip != 'true'
+        uses: game-ci/unity-test-runner@v4
+        with:
+          projectPath: mobile/unity
+          testMode: EditMode
+          unityVersion: ${{ env.UNITY_VERSION || '2022.3.21f1' }}
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+
+      - name: Mark skipped
+        if: steps.check_license.outputs.skip == 'true'
+        run: echo "Unity tests skipped (no license)."
