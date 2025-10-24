@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from time import perf_counter
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from cv_engine.metrics import detect_impact
 from cv_engine.pose.base import Keypoint as PoseKeypoint, PoseFrame
@@ -22,6 +22,8 @@ from server.schemas.coach import (
 )
 from server.testing import MiniAPI
 from server import ar_targets
+from server.routes import billing as billing_routes
+from server.security.entitlements import require_tier
 from siq.coach import (
     CoachChatRequest,
     CoachResponder,
@@ -34,6 +36,39 @@ from siq.coach import (
 from siq.observability import cv_stage, record_frame_inference
 
 app = MiniAPI()
+
+
+def _register_get(path: str):
+    def decorator(func):
+        app.routes[("GET", path)] = func
+        return func
+
+    return decorator
+
+
+def _call_handler(
+    method: str,
+    path: str,
+    *,
+    json: Dict[str, Any] | None = None,
+    query: Dict[str, Any] | None = None,
+):
+    handler = app.routes.get((method.upper(), path))
+    if handler is None:
+        raise KeyError("route not registered")
+    if method.upper() == "GET":
+        return handler(query or {}, {})
+    return handler(json or {}, {})
+
+
+app.get = _register_get  # type: ignore[attr-defined]
+
+
+def _app_call_handler(method: str, path: str, json=None, query=None):
+    return _call_handler(method, path, json=json, query=query)
+
+
+app.call_handler = _app_call_handler  # type: ignore[attr-defined]
 
 telemetry_broker = ar_targets.TelemetryBroker()
 target_run_store = ar_targets.TargetRunStore()
@@ -305,3 +340,18 @@ def record_target_hit(payload, headers):
 @app.post("/ws/telemetry")
 def post_telemetry(payload, headers):
     return telemetry_broker.emit("telemetry", payload)
+
+
+billing_routes.register(app)
+
+
+@app.get("/entitlements/demo-pro")
+def entitlements_demo_pro(query, headers):
+    user_id = (query or {}).get("userId")
+    if not user_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={"status": "error", "reason": "userId required"},
+        )
+    require_tier("pro")(user_id)
+    return {"ok": True}
