@@ -3,7 +3,36 @@ const app = document.getElementById("app");
 const state = {
   loading: false,
   result: null,
+  tab: "metrics",
+  highlights: [],
+  leaderboards: {
+    hardestShot: [],
+    mostHits: [],
+  },
 };
+
+const tabs = [
+  { id: "metrics", label: "Metrics" },
+  { id: "highlights", label: "Highlights" },
+  { id: "leaderboards", label: "Leaderboards" },
+];
+
+function createTabs() {
+  const nav = document.createElement("nav");
+  nav.className = "tabs";
+  tabs.forEach((tab) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = tab.label;
+    button.className = tab.id === state.tab ? "active" : "";
+    button.addEventListener("click", () => {
+      state.tab = tab.id;
+      render();
+    });
+    nav.appendChild(button);
+  });
+  return nav;
+}
 
 function createCard(result) {
   const card = document.createElement("section");
@@ -37,18 +66,26 @@ function createCard(result) {
 
 function render() {
   app.innerHTML = "";
-  if (state.loading) {
+  app.appendChild(createTabs());
+
+  if (state.loading && state.tab === "metrics") {
     const loading = document.createElement("p");
     loading.textContent = "Analyzing back-view...";
     app.appendChild(loading);
     return;
   }
-  if (state.result) {
-    app.appendChild(createCard(state.result));
-  } else {
-    const empty = document.createElement("p");
-    empty.textContent = "Upload a clip to see metrics.";
-    app.appendChild(empty);
+  if (state.tab === "metrics") {
+    if (state.result) {
+      app.appendChild(createCard(state.result));
+    } else {
+      const empty = document.createElement("p");
+      empty.textContent = "Upload a clip to see metrics.";
+      app.appendChild(empty);
+    }
+  } else if (state.tab === "highlights") {
+    app.appendChild(renderHighlights());
+  } else if (state.tab === "leaderboards") {
+    app.appendChild(renderLeaderboards());
   }
 }
 
@@ -61,6 +98,74 @@ export function setBackViewResult(result) {
 export function setLoading() {
   state.loading = true;
   render();
+}
+
+export function setHighlights(highlights) {
+  state.highlights = highlights;
+  render();
+}
+
+export function setLeaderboards(leaderboards) {
+  state.leaderboards = leaderboards;
+  render();
+}
+
+function renderHighlights() {
+  const container = document.createElement("div");
+  container.className = "highlight-grid";
+  if (!state.highlights.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No highlights yet. Capture a hit to create one.";
+    container.appendChild(empty);
+    return container;
+  }
+  state.highlights.forEach((highlight) => {
+    const tile = document.createElement("article");
+    tile.className = "highlight-card";
+    tile.innerHTML = `
+      <div class="preview" role="img" aria-label="${highlight.title}">
+        <span>${highlight.badge}</span>
+      </div>
+      <div class="details">
+        <h3>${highlight.title}</h3>
+        <p>${highlight.subtitle}</p>
+        <button type="button" data-id="${highlight.id}">Share</button>
+      </div>
+    `;
+    const button = tile.querySelector("button");
+    button.addEventListener("click", () => highlight.onShare?.(highlight));
+    container.appendChild(tile);
+  });
+  return container;
+}
+
+function leaderboardSection(title, entries) {
+  const section = document.createElement("section");
+  section.className = "leaderboard";
+  section.innerHTML = `<h3>${title}</h3>`;
+  const list = document.createElement("ol");
+  entries.forEach((entry) => {
+    const item = document.createElement("li");
+    item.innerHTML = `
+      <span class="rank">${entry.rank}</span>
+      <span class="player">${entry.player}</span>
+      <span class="score">${entry.score}</span>
+      <span class="region">${entry.region}</span>
+    `;
+    list.appendChild(item);
+  });
+  section.appendChild(list);
+  return section;
+}
+
+function renderLeaderboards() {
+  const container = document.createElement("div");
+  container.className = "leaderboard-grid";
+  const hardest = leaderboardSection("Hardest Shot", state.leaderboards.hardestShot);
+  const hits = leaderboardSection("Most Hits", state.leaderboards.mostHits);
+  container.appendChild(hardest);
+  container.appendChild(hits);
+  return container;
 }
 
 render();
