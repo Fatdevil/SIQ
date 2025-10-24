@@ -1,14 +1,16 @@
+import { Link } from 'react-router-dom';
+
 type UpgradeCTAProps = {
   feature: string;
 };
 
 export default function UpgradeCTA({ feature }: UpgradeCTAProps) {
   return (
-    <div className="rounded-xl bg-amber-100 p-3 text-sm">
+    <div className="alert">
       🔒 {feature} is a Pro feature.{' '}
-      <a href="/upgrade" className="underline">
+      <Link to="/upgrade" className="link">
         Unlock with SoccerIQ Pro
-      </a>
+      </Link>
     </div>
   );
 }
