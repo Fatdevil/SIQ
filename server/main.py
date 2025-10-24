@@ -15,12 +15,29 @@ from metrics import angle, ball, carry_v1, club
 from opentelemetry import trace
 from server.testing import MiniAPI
 from server import ar_targets
+from siq.coach import (
+    CoachChatRequest,
+    CoachResponder,
+    PersonaPreferenceStore,
+    PersonaRegistry,
+    RunHistory,
+    WeeklySummaryJob,
+)
 from siq.observability import cv_stage, record_frame_inference
 
 app = MiniAPI()
 
 telemetry_broker = ar_targets.TelemetryBroker()
 target_run_store = ar_targets.TargetRunStore()
+
+_persona_registry = PersonaRegistry()
+_persona_store = PersonaPreferenceStore(_persona_registry)
+coach_responder = CoachResponder(
+    preferences=_persona_store,
+    registry=_persona_registry,
+)
+run_history = RunHistory()
+weekly_summary_job = WeeklySummaryJob(run_history, registry=_persona_registry)
 
 _TRACER = trace.get_tracer("siq.cv")
 
@@ -184,6 +201,28 @@ def analyze_back_view(payload: Dict[str, object], headers: Dict[str, str]) -> Di
             "quality": quality,
             "sourceHints": source_hints,
         }
+
+
+@app.post("/coach/chat")
+def coach_chat(payload: Dict[str, object], headers: Dict[str, str]) -> Dict[str, object]:
+    request = CoachChatRequest.from_dict(payload)
+    response = coach_responder.reply(request)
+    return response
+
+
+@app.post("/coach/weekly-summary")
+def coach_weekly_summary(payload: Dict[str, object], headers: Dict[str, str]) -> Dict[str, object]:
+    user_id = str(payload.get("userId", "")).strip()
+    if not user_id:
+        return {"status": "error", "reason": "userId is required"}
+    persona = payload.get("persona")
+    last_n = int(payload.get("lastN", 5))
+    if persona:
+        persona_profile = _persona_store.set_preference(user_id, str(persona))
+    else:
+        persona_profile = _persona_store.get_preference(user_id)
+    summary = weekly_summary_job.summarize(user_id, persona_profile.key, last_n)
+    return {"status": "ok", "persona": persona_profile.label, "summary": summary}
 
 
 @app.post("/score/hit")
