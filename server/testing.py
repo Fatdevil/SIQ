@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Tuple
 
+from fastapi import HTTPException
+
 
 @dataclass
 class Response:
@@ -29,8 +31,14 @@ class TestClient:
             return Response(status_code=404, body={"detail": "Not found"})
         try:
             payload = handler(json, headers or {})
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {"detail": exc.detail}
+            return Response(status_code=exc.status_code, body=detail)
         except Exception as exc:  # pragma: no cover - surfaced in tests
             return Response(status_code=500, body={"detail": str(exc)})
+        if isinstance(payload, tuple) and len(payload) == 2:
+            body, status_code = payload
+            return Response(status_code=status_code, body=body)
         return Response(status_code=200, body=payload)
 
 

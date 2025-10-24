@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 
 class HTTPException(Exception):
-    def __init__(self, status_code: int, detail: str) -> None:
+    def __init__(self, status_code: int, detail: Any) -> None:
         super().__init__(detail)
         self.status_code = status_code
         self.detail = detail
