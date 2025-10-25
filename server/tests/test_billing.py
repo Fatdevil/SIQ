@@ -108,3 +108,74 @@ def test_stripe_webhook_non_dict_metadata_returns_none(tmp_path) -> None:
         "data": {"object": {"id": "cs_test_invalid", "metadata": "not-a-dict"}},
     }
     assert service.process_stripe_checkout(event) is None
+
+
+def test_feature_blocked_requires_feature(client: TestClient) -> None:
+    response = client.post(
+        "/billing/events/feature-blocked",
+        json={},
+        headers={"x-user-id": "user-1"},
+    )
+    assert response.status_code == 422
+
+
+def test_feature_blocked_emits_telemetry(monkeypatch, client: TestClient) -> None:
+    events: list[tuple[str, dict[str, str] | None]] = []
+
+    def _capture(event: str, data: dict[str, str] | None = None) -> None:
+        events.append((event, data or {}))
+
+    monkeypatch.setattr("server.routes.billing.emit_telemetry", _capture)
+
+    response = client.post(
+        "/billing/events/feature-blocked",
+        json={"feature": "coach_personas"},
+        headers={"x-user-id": "user-2"},
+    )
+    assert response.status_code == 200
+    assert events[-1][0] == "feature_blocked"
+    assert events[-1][1]["feature"] == "coach_personas"
+    assert events[-1][1]["userId"] == "user-2"
+
+
+def test_restore_click_emits_event(monkeypatch, client: TestClient) -> None:
+    events: list[tuple[str, dict[str, str] | None]] = []
+
+    def _capture(event: str, data: dict[str, str] | None = None) -> None:
+        events.append((event, data or {}))
+
+    monkeypatch.setattr("server.routes.billing.emit_telemetry", _capture)
+
+    response = client.post(
+        "/billing/receipt",
+        json={
+            "provider": "mock",
+            "payload": {
+                "mode": "restore",
+                "productId": "pro",
+                "receipt": "RESTORE-1",
+            },
+        },
+        headers={"x-user-id": "restorer"},
+    )
+    assert response.status_code == 200
+    assert any(event == "restore_clicked" for event, _ in events)
+
+
+def test_restore_event_endpoint_logs(monkeypatch, client: TestClient) -> None:
+    events: list[tuple[str, dict[str, str] | None]] = []
+
+    def _capture(event: str, data: dict[str, str] | None = None) -> None:
+        events.append((event, data or {}))
+
+    monkeypatch.setattr("server.routes.billing.emit_telemetry", _capture)
+
+    response = client.post(
+        "/billing/events/restore",
+        json={"provider": "stripe"},
+        headers={"x-user-id": "web-user"},
+    )
+    assert response.status_code == 200
+    assert events[-1][0] == "restore_clicked"
+    assert events[-1][1]["provider"] == "stripe"
+    assert events[-1][1]["userId"] == "web-user"

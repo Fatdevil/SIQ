@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SafeAreaView,
   View,
@@ -7,8 +7,8 @@ import {
   ScrollView,
   StyleSheet,
   Share,
-  TextInput,
   Platform,
+  AppState,
 } from "react-native";
 
 type Highlight = {
@@ -27,9 +27,18 @@ type LeaderboardEntry = {
   region: string;
 };
 
-type BillingStatus = {
-  tier: "free" | "pro" | "elite";
+type Entitlement = {
+  productId: string;
+  status: "active" | "expired" | "revoked";
+  source: string;
+  createdAt: string;
   expiresAt?: string | null;
+};
+
+type EntitlementState = {
+  map: Record<string, Entitlement>;
+  loading: boolean;
+  error: string | null;
 };
 
 const API_BASE = (globalThis as any).API_BASE ?? "";
@@ -167,7 +176,7 @@ const LeaderboardList: React.FC<LeaderboardListProps> = ({ title, data }) => (
 type BillingBannerProps = {
   loading: boolean;
   error: string | null;
-  tier: BillingStatus["tier"];
+  tier: "free" | "pro" | "elite";
 };
 
 const BillingBanner: React.FC<BillingBannerProps> = ({ loading, error, tier }) => {
@@ -202,6 +211,22 @@ const UpgradeCTA: React.FC<UpgradeCTAProps> = ({ copy, onPress }) => (
   </TouchableOpacity>
 );
 
+type PremiumOverlayProps = {
+  message: string;
+  onPress: () => void;
+};
+
+const PremiumOverlay: React.FC<PremiumOverlayProps> = ({ message, onPress }) => (
+  <View style={styles.premiumOverlay}>
+    <View style={styles.premiumOverlayCard}>
+      <Text style={styles.premiumOverlayText}>{message}</Text>
+      <TouchableOpacity style={styles.premiumOverlayButton} onPress={onPress} activeOpacity={0.9}>
+        <Text style={styles.premiumOverlayButtonText}>Upgrade</Text>
+      </TouchableOpacity>
+    </View>
+  </View>
+);
+
 type PersonaCardProps = {
   name: string;
   tagline: string;
@@ -219,51 +244,49 @@ const PersonaCard: React.FC<PersonaCardProps> = ({ name, tagline, locked }) => (
 );
 
 type UpgradeScreenProps = {
-  receipt: string;
-  onChangeReceipt: (text: string) => void;
-  onSubmit: () => void;
+  onUpgrade: () => void;
+  onRestore: () => void;
   submitting: boolean;
   message: string;
   error: string;
-  currentTier: BillingStatus["tier"];
+  currentTier: "free" | "pro" | "elite";
   onClose: () => void;
 };
 
 const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
-  receipt,
-  onChangeReceipt,
-  onSubmit,
+  onUpgrade,
+  onRestore,
   submitting,
   message,
   error,
   currentTier,
   onClose,
 }) => {
+  const storeName = Platform.OS === "ios" ? "App Store" : "Play Store";
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.upgradeContainer}>
         <Text style={styles.header}>Activate SoccerIQ Pro</Text>
         <Text style={styles.upgradeCopy}>
-          Use mock receipts (PRO-* or ELITE-*) to simulate App Store and Play Store upgrades while checkout is under review.
+          Checkout is handled by the {storeName}. Complete the purchase to unlock SoccerIQ Pro instantly on this device.
         </Text>
         <Text style={styles.upgradeStatus}>Current tier: {currentTier.toUpperCase()}</Text>
-        <TextInput
-          accessibilityLabel="Receipt code"
-          style={styles.input}
-          placeholder="PRO-123"
-          autoCapitalize="characters"
-          autoCorrect={false}
-          value={receipt}
-          onChangeText={onChangeReceipt}
-        />
+        <View style={styles.upgradeCard}>
+          <Text style={styles.upgradeBenefit}>• Unlimited coach personas</Text>
+          <Text style={styles.upgradeBenefit}>• AR target precision scoring</Text>
+          <Text style={styles.upgradeBenefit}>• Priority match insights</Text>
+        </View>
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
         {message ? <Text style={styles.successText}>{message}</Text> : null}
         <TouchableOpacity
           style={[styles.actionButton, submitting && styles.actionButtonDisabled]}
-          onPress={onSubmit}
+          onPress={onUpgrade}
           disabled={submitting}
         >
-          <Text style={styles.actionButtonText}>{submitting ? "Activating…" : "Activate"}</Text>
+          <Text style={styles.actionButtonText}>{submitting ? "Processing…" : `Upgrade with ${storeName}`}</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.restoreButton} onPress={onRestore} disabled={submitting}>
+          <Text style={styles.restoreButtonText}>Restore purchases</Text>
         </TouchableOpacity>
         <TouchableOpacity style={styles.backButton} onPress={onClose}>
           <Text style={styles.backButtonText}>Back to home</Text>
@@ -276,40 +299,91 @@ const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
 const App: React.FC = () => {
   const [tab, setTab] = useState<string>("highlights");
   const [screen, setScreen] = useState<"home" | "upgrade">("home");
-  const [billingStatus, setBillingStatus] = useState<BillingStatus>({ tier: "free" });
-  const [billingLoading, setBillingLoading] = useState<boolean>(true);
-  const [billingError, setBillingError] = useState<string | null>(null);
-  const [receipt, setReceipt] = useState<string>("");
+  const [entitlements, setEntitlements] = useState<EntitlementState>({
+    map: {},
+    loading: true,
+    error: null,
+  });
   const [upgradeSubmitting, setUpgradeSubmitting] = useState<boolean>(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string>("");
   const [upgradeError, setUpgradeError] = useState<string>("");
+  const blockedRef = useRef<Set<string>>(new Set());
   const onShare = useShareHandler();
 
-  const refreshBillingStatus = useCallback(async () => {
-    setBillingLoading(true);
-    setBillingError(null);
+  const logFeatureBlocked = useCallback((feature: string) => {
+    if (blockedRef.current.has(feature)) {
+      return;
+    }
+    blockedRef.current.add(feature);
+    fetch(`${API_BASE}/billing/events/feature-blocked`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": USER_ID,
+      },
+      body: JSON.stringify({ feature }),
+    }).catch(() => {
+      blockedRef.current.delete(feature);
+    });
+  }, []);
+
+  const refreshEntitlements = useCallback(async () => {
+    setEntitlements((prev) => ({ ...prev, loading: true, error: null }));
     try {
-      const response = await fetch(
-        `${API_BASE}/billing/status?userId=${encodeURIComponent(USER_ID)}`,
-      );
+      const response = await fetch(`${API_BASE}/me/entitlements`, {
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-User-Id": USER_ID,
+        },
+      });
       if (!response.ok) {
         throw new Error(`status ${response.status}`);
       }
-      const data = (await response.json()) as BillingStatus;
-      setBillingStatus(data);
+      const data = (await response.json()) as { entitlements?: Entitlement[] };
+      const map: Record<string, Entitlement> = {};
+      (data.entitlements ?? []).forEach((entry) => {
+        if (entry && entry.productId) {
+          map[entry.productId] = entry;
+        }
+      });
+      setEntitlements({ map, loading: false, error: null });
     } catch (err) {
-      console.error("Failed to fetch billing status", err);
-      setBillingError("Unable to refresh billing status.");
-    } finally {
-      setBillingLoading(false);
+      console.error("Failed to fetch entitlements", err);
+      setEntitlements((prev) => ({
+        ...prev,
+        loading: false,
+        error: "Unable to refresh entitlements.",
+      }));
     }
   }, []);
 
   useEffect(() => {
-    refreshBillingStatus();
-  }, [refreshBillingStatus]);
+    refreshEntitlements();
+  }, [refreshEntitlements]);
 
-  const isPro = billingStatus.tier === "pro" || billingStatus.tier === "elite";
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") {
+        refreshEntitlements();
+      }
+    });
+    return () => {
+      subscription.remove();
+    };
+  }, [refreshEntitlements]);
+
+  const currentTier = useMemo<"free" | "pro" | "elite">(() => {
+    if (entitlements.map.elite?.status === "active") {
+      return "elite";
+    }
+    if (entitlements.map.pro?.status === "active") {
+      return "pro";
+    }
+    return "free";
+  }, [entitlements.map]);
+
+  const isPro = currentTier === "pro" || currentTier === "elite";
 
   const personaList = useMemo(() => {
     if (isPro) {
@@ -318,41 +392,81 @@ const App: React.FC = () => {
     return personaCatalog.map((persona, index) => ({ ...persona, locked: index > 0 }));
   }, [isPro]);
 
+  const mockPurchase = useCallback(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    const prefix = Platform.OS === "ios" ? "APPLE" : "GOOGLE";
+    return { receipt: `${prefix}-${Date.now()}`, productId: "pro" };
+  }, []);
+
   const handleUpgrade = useCallback(async () => {
-    const trimmed = receipt.trim();
-    if (!trimmed) {
-      setUpgradeError("Enter a mock receipt (PRO-* or ELITE-*).");
-      setUpgradeMessage("");
-      return;
-    }
     setUpgradeSubmitting(true);
     setUpgradeError("");
     setUpgradeMessage("");
     try {
-      const response = await fetch(`${API_BASE}/billing/verify`, {
+      const provider = Platform.OS === "ios" ? "apple" : "google";
+      const purchase = await mockPurchase();
+      const response = await fetch(`${API_BASE}/billing/receipt`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Id": USER_ID,
+        },
         body: JSON.stringify({
-          userId: USER_ID,
-          platform: Platform.OS === "ios" ? "ios" : "android",
-          receipt: trimmed,
+          provider,
+          payload: {
+            receipt: purchase.receipt,
+            productId: purchase.productId,
+          },
         }),
       });
       if (!response.ok) {
         throw new Error(`status ${response.status}`);
       }
-      const data = (await response.json()) as BillingStatus;
-      setUpgradeMessage(`Activated ${data.tier.toUpperCase()}.`);
-      setReceipt("");
-      await refreshBillingStatus();
-      setScreen("home");
+      const data = (await response.json()) as Entitlement;
+      setUpgradeMessage(`Activated ${data.productId.toUpperCase()}.`);
+      await refreshEntitlements();
     } catch (err) {
-      console.error("Failed to verify receipt", err);
-      setUpgradeError("Verification failed. Check the receipt and try again.");
+      console.error("Failed to start checkout", err);
+      setUpgradeError("Checkout failed. Try again in a moment.");
     } finally {
       setUpgradeSubmitting(false);
     }
-  }, [receipt, refreshBillingStatus]);
+  }, [mockPurchase, refreshEntitlements]);
+
+  const handleRestore = useCallback(async () => {
+    setUpgradeSubmitting(true);
+    setUpgradeError("");
+    setUpgradeMessage("");
+    try {
+      const provider = Platform.OS === "ios" ? "apple" : "google";
+      const response = await fetch(`${API_BASE}/billing/receipt`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-User-Id": USER_ID,
+        },
+        body: JSON.stringify({
+          provider,
+          payload: {
+            mode: "restore",
+            receipt: `RESTORE-${Date.now()}`,
+            productId: "pro",
+          },
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`);
+      }
+      const data = (await response.json()) as Entitlement;
+      setUpgradeMessage(`Restored ${data.productId.toUpperCase()} benefits.`);
+      await refreshEntitlements();
+    } catch (err) {
+      console.error("Failed to restore purchases", err);
+      setUpgradeError("Restore failed. Try again in a moment.");
+    } finally {
+      setUpgradeSubmitting(false);
+    }
+  }, [refreshEntitlements]);
 
   const leaderboardContent = useMemo(() => {
     if (tab === "hardest") {
@@ -367,59 +481,85 @@ const App: React.FC = () => {
   if (screen === "upgrade") {
     return (
       <UpgradeScreen
-        receipt={receipt}
-        onChangeReceipt={setReceipt}
-        onSubmit={handleUpgrade}
+        onUpgrade={handleUpgrade}
+        onRestore={handleRestore}
         submitting={upgradeSubmitting}
         message={upgradeMessage}
         error={upgradeError}
-        currentTier={billingStatus.tier}
+        currentTier={currentTier}
         onClose={() => setScreen("home")}
       />
     );
+  }
+
+  const showCoachLock = !entitlements.loading && !isPro;
+  const showArLock = !entitlements.loading && !isPro;
+  if (showCoachLock) {
+    logFeatureBlocked("coach_personas");
+  }
+  if (showArLock) {
+    logFeatureBlocked("ar_precision");
   }
 
   return (
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.header}>Highlights & Leaderboards</Text>
-        <BillingBanner loading={billingLoading} error={billingError} tier={billingStatus.tier} />
+        <BillingBanner loading={entitlements.loading} error={entitlements.error} tier={currentTier} />
 
-        <View style={styles.section}>
+        <View style={[styles.section, showCoachLock && styles.sectionLocked]}>
           <Text style={styles.sectionTitle}>Coach Personas</Text>
           <Text style={styles.sectionCopy}>
             Personalized training blueprints voiced by expert coaches for your squad.
           </Text>
-          <View style={styles.personaGrid}>
-            {personaList.map((persona) => (
-              <PersonaCard
-                key={persona.id}
-                name={persona.name}
-                tagline={persona.tagline}
-                locked={persona.locked}
-              />
-            ))}
-          </View>
-          {!isPro ? (
-            <UpgradeCTA copy="Unlock all coach personas" onPress={() => setScreen("upgrade")} />
+          {entitlements.loading ? (
+            <Text style={styles.sectionLoading}>Loading personas…</Text>
+          ) : (
+            <View style={styles.personaGrid}>
+              {personaList.map((persona) => (
+                <PersonaCard
+                  key={persona.id}
+                  name={persona.name}
+                  tagline={persona.tagline}
+                  locked={persona.locked}
+                />
+              ))}
+            </View>
+          )}
+          {showCoachLock ? (
+            <PremiumOverlay
+              message="SoccerIQ Pro unlocks all coach personas."
+              onPress={() => setScreen("upgrade")}
+            />
           ) : null}
         </View>
+        {showCoachLock ? (
+          <UpgradeCTA copy="Unlock all coach personas" onPress={() => setScreen("upgrade")} />
+        ) : null}
 
-        <View style={styles.section}>
+        <View style={[styles.section, showArLock && styles.sectionLocked]}>
           <Text style={styles.sectionTitle}>AR Target Precision</Text>
           <Text style={styles.sectionCopy}>
             Overlay augmented targets on your net and log finishing accuracy streaks automatically.
           </Text>
-          {isPro ? (
+          {entitlements.loading ? (
+            <Text style={styles.sectionLoading}>Loading precision tools…</Text>
+          ) : isPro ? (
             <View style={styles.unlockedCard}>
               <Text style={styles.unlockedText}>
                 ✅ Precision tracking unlocked. Calibrate your target to start scoring every drill.
               </Text>
             </View>
           ) : (
-            <UpgradeCTA copy="Unlock AR Target precision scoring" onPress={() => setScreen("upgrade")} />
+            <PremiumOverlay
+              message="SoccerIQ Pro unlocks AR precision scoring."
+              onPress={() => setScreen("upgrade")}
+            />
           )}
         </View>
+        {showArLock ? (
+          <UpgradeCTA copy="Unlock AR Target precision scoring" onPress={() => setScreen("upgrade")} />
+        ) : null}
 
         <View style={styles.tabBar}>
           {TABS.map((tabItem) => (
@@ -484,6 +624,10 @@ const styles = StyleSheet.create({
     padding: 16,
     marginBottom: 20,
   },
+  sectionLocked: {
+    position: "relative",
+    overflow: "hidden",
+  },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
@@ -493,6 +637,10 @@ const styles = StyleSheet.create({
   sectionCopy: {
     color: "rgba(226, 232, 240, 0.75)",
     marginBottom: 16,
+  },
+  sectionLoading: {
+    color: "rgba(226, 232, 240, 0.6)",
+    fontStyle: "italic",
   },
   personaGrid: {
     flexDirection: "row",
@@ -547,6 +695,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     marginTop: 12,
+    marginBottom: 20,
   },
   upgradeCtaCopy: {
     color: "#ffdd99",
@@ -681,13 +830,16 @@ const styles = StyleSheet.create({
     fontWeight: "600",
     marginBottom: 16,
   },
-  input: {
-    backgroundColor: "#ffffff",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    fontSize: 16,
-    marginBottom: 12,
+  upgradeCard: {
+    backgroundColor: "rgba(255, 255, 255, 0.06)",
+    borderRadius: 18,
+    padding: 16,
+    marginBottom: 16,
+  },
+  upgradeBenefit: {
+    color: "rgba(226, 232, 240, 0.85)",
+    fontWeight: "600",
+    marginBottom: 6,
   },
   actionButton: {
     backgroundColor: "#00d1ff",
@@ -714,6 +866,19 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     fontWeight: "600",
   },
+  restoreButton: {
+    alignSelf: "center",
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: "rgba(148, 163, 184, 0.5)",
+    borderRadius: 999,
+    paddingHorizontal: 24,
+    paddingVertical: 8,
+  },
+  restoreButtonText: {
+    color: "#94a3b8",
+    fontWeight: "600",
+  },
   backButton: {
     marginTop: 20,
     alignSelf: "center",
@@ -721,5 +886,31 @@ const styles = StyleSheet.create({
   backButtonText: {
     color: "#00d1ff",
     fontWeight: "600",
+  },
+  premiumOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(12, 21, 36, 0.82)",
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 16,
+  },
+  premiumOverlayCard: {
+    alignItems: "center",
+  },
+  premiumOverlayText: {
+    color: "#e2e8f0",
+    textAlign: "center",
+    fontWeight: "600",
+    marginBottom: 12,
+  },
+  premiumOverlayButton: {
+    backgroundColor: "#f97316",
+    borderRadius: 999,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+  },
+  premiumOverlayButtonText: {
+    color: "#0f172a",
+    fontWeight: "700",
   },
 });

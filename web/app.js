@@ -21,6 +21,8 @@ const COACH_PERSONAS = [
   },
 ];
 
+const blockedFeatures = new Set();
+
 const state = {
   loading: false,
   result: null,
@@ -30,13 +32,12 @@ const state = {
     hardestShot: [],
     mostHits: [],
   },
-  billing: {
-    status: null,
-    loading: true,
+  entitlements: {
+    status: "loading",
+    map: {},
     error: null,
   },
   upgrade: {
-    receipt: "",
     submitting: false,
     message: "",
     error: "",
@@ -51,7 +52,13 @@ const tabs = [
 ];
 
 function tier() {
-  return state.billing.status?.tier ?? "free";
+  if (state.entitlements.map.elite?.status === "active") {
+    return "elite";
+  }
+  if (state.entitlements.map.pro?.status === "active") {
+    return "pro";
+  }
+  return "free";
 }
 
 function isPro() {
@@ -61,6 +68,23 @@ function isPro() {
 
 function canUseArPrecision() {
   return isPro();
+}
+
+function maybeLogFeatureBlocked(feature) {
+  if (blockedFeatures.has(feature)) {
+    return;
+  }
+  blockedFeatures.add(feature);
+  fetch(`${API_BASE}/billing/events/feature-blocked`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Id": USER_ID,
+    },
+    body: JSON.stringify({ feature }),
+  }).catch(() => {
+    blockedFeatures.delete(feature);
+  });
 }
 
 function createTabs() {
@@ -80,21 +104,20 @@ function createTabs() {
   return nav;
 }
 
-function createBillingBanner() {
+function createEntitlementBanner() {
   const banner = document.createElement("div");
   banner.className = "billing-banner";
-  if (state.billing.loading) {
+  if (state.entitlements.status === "loading" || state.entitlements.status === "refreshing") {
     banner.textContent = "Checking subscription…";
     banner.classList.add("pending");
     return banner;
   }
-  if (state.billing.error) {
-    banner.textContent = state.billing.error;
+  if (state.entitlements.status === "error") {
+    banner.textContent = state.entitlements.error ?? "Unable to refresh entitlements.";
     banner.classList.add("error");
     return banner;
   }
-  const status = state.billing.status;
-  banner.innerHTML = `Current tier: <strong>${status?.tier?.toUpperCase() ?? "FREE"}</strong>`;
+  banner.innerHTML = `Current tier: <strong>${tier().toUpperCase()}</strong>`;
   return banner;
 }
 
@@ -113,6 +136,25 @@ function createUpgradeCTA(feature) {
   cta.appendChild(message);
   cta.appendChild(button);
   return cta;
+}
+
+function attachPremiumOverlay(section, featureKey) {
+  maybeLogFeatureBlocked(featureKey);
+  section.classList.add("premium-locked");
+  const overlay = document.createElement("div");
+  overlay.className = "premium-overlay";
+  const text = document.createElement("p");
+  text.textContent = "SoccerIQ Pro unlocks this feature.";
+  const button = document.createElement("button");
+  button.type = "button";
+  button.textContent = "Upgrade";
+  button.addEventListener("click", () => {
+    state.tab = "upgrade";
+    render();
+  });
+  overlay.appendChild(text);
+  overlay.appendChild(button);
+  section.appendChild(overlay);
 }
 
 function createCard(result) {
@@ -146,6 +188,7 @@ function createCard(result) {
 }
 
 function renderCoachPersonas() {
+  const wrapper = document.createElement("div");
   const section = document.createElement("section");
   section.className = "feature-section";
   const heading = document.createElement("h3");
@@ -155,12 +198,13 @@ function renderCoachPersonas() {
   description.textContent = "Hand-picked coaching voices that personalize drills and match prep.";
   section.appendChild(description);
 
-  if (state.billing.loading) {
+  if (state.entitlements.status === "loading" || state.entitlements.status === "refreshing") {
     const loading = document.createElement("p");
     loading.className = "feature-loading";
     loading.textContent = "Loading personas…";
     section.appendChild(loading);
-    return section;
+    wrapper.appendChild(section);
+    return wrapper;
   }
 
   const grid = document.createElement("div");
@@ -180,12 +224,17 @@ function renderCoachPersonas() {
   section.appendChild(grid);
 
   if (!isPro()) {
-    section.appendChild(createUpgradeCTA("Unlock all coach personas"));
+    attachPremiumOverlay(section, "coach_personas");
+    wrapper.appendChild(section);
+    wrapper.appendChild(createUpgradeCTA("Unlock all coach personas"));
+    return wrapper;
   }
-  return section;
+  wrapper.appendChild(section);
+  return wrapper;
 }
 
 function renderArPrecision() {
+  const wrapper = document.createElement("div");
   const section = document.createElement("section");
   section.className = "feature-section";
   const heading = document.createElement("h3");
@@ -195,19 +244,20 @@ function renderArPrecision() {
   description.textContent = "Track finishing accuracy with augmented targets on your net.";
   section.appendChild(description);
 
-  if (state.billing.loading) {
+  if (state.entitlements.status === "loading" || state.entitlements.status === "refreshing") {
     const loading = document.createElement("p");
     loading.className = "feature-loading";
     loading.textContent = "Loading precision tools…";
     section.appendChild(loading);
-    return section;
+    wrapper.appendChild(section);
+    return wrapper;
   }
 
   if (!canUseArPrecision()) {
-    section.appendChild(
-      createUpgradeCTA("AR Target precision scoring"),
-    );
-    return section;
+    attachPremiumOverlay(section, "ar_precision");
+    wrapper.appendChild(section);
+    wrapper.appendChild(createUpgradeCTA("AR Target precision scoring"));
+    return wrapper;
   }
 
   const unlocked = document.createElement("div");
@@ -216,7 +266,8 @@ function renderArPrecision() {
     <p class="success">✅ Precision tracking unlocked. Calibrate the target to start logging accuracy streaks.</p>
   `;
   section.appendChild(unlocked);
-  return section;
+  wrapper.appendChild(section);
+  return wrapper;
 }
 
 function renderUpgrade() {
@@ -229,47 +280,45 @@ function renderUpgrade() {
   const copy = document.createElement("p");
   copy.className = "upgrade-copy";
   copy.innerHTML =
-    "Use mock receipts (PRO-* or ELITE-*) to simulate App Store or Play Store upgrades while we finalize in-app purchases.";
+    "Checkout is powered by Stripe for the web and the App/Play Store on mobile. Complete payment to unlock Pro instantly.";
   container.appendChild(copy);
 
-  if (state.billing.status) {
-    const current = document.createElement("p");
-    current.className = "upgrade-status";
-    current.innerHTML = `Current tier: <strong>${tier().toUpperCase()}</strong>`;
-    container.appendChild(current);
-  }
+  const status = document.createElement("p");
+  status.className = "upgrade-status";
+  status.innerHTML = `Current tier: <strong>${tier().toUpperCase()}</strong>`;
+  container.appendChild(status);
 
-  const form = document.createElement("form");
-  form.className = "upgrade-form";
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    await submitUpgrade();
+  const benefits = document.createElement("ul");
+  benefits.className = "upgrade-benefits";
+  [
+    "Unlimited coach personas",
+    "AR target precision scoring",
+    "Priority match insights",
+  ].forEach((benefit) => {
+    const item = document.createElement("li");
+    item.textContent = benefit;
+    benefits.appendChild(item);
   });
-
-  const label = document.createElement("label");
-  label.setAttribute("for", "receipt");
-  label.textContent = "Receipt code";
-
-  const input = document.createElement("input");
-  input.id = "receipt";
-  input.name = "receipt";
-  input.type = "text";
-  input.placeholder = "PRO-123";
-  input.autocomplete = "off";
-  input.value = state.upgrade.receipt;
-  input.addEventListener("input", (event) => {
-    state.upgrade.receipt = event.target.value;
-  });
+  container.appendChild(benefits);
 
   const button = document.createElement("button");
-  button.type = "submit";
-  button.textContent = state.upgrade.submitting ? "Activating…" : "Activate Pro";
+  button.type = "button";
+  button.className = "upgrade-primary";
+  button.textContent = state.upgrade.submitting ? "Redirecting…" : "Upgrade with Stripe Checkout";
   button.disabled = state.upgrade.submitting;
+  button.addEventListener("click", async () => {
+    await startWebCheckout();
+  });
+  container.appendChild(button);
 
-  form.appendChild(label);
-  form.appendChild(input);
-  form.appendChild(button);
-  container.appendChild(form);
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "restore-button";
+  restore.textContent = "Restore purchases";
+  restore.addEventListener("click", () => {
+    handleRestore();
+  });
+  container.appendChild(restore);
 
   if (state.upgrade.error) {
     const error = document.createElement("p");
@@ -293,7 +342,7 @@ function render() {
   app.appendChild(createTabs());
 
   if (state.tab === "metrics") {
-    app.appendChild(createBillingBanner());
+    app.appendChild(createEntitlementBanner());
     if (state.loading) {
       const loading = document.createElement("p");
       loading.textContent = "Analyzing back-view…";
@@ -395,33 +444,43 @@ function renderLeaderboards() {
   return container;
 }
 
-async function refreshBillingStatus() {
-  state.billing.loading = true;
-  state.billing.error = null;
+async function refreshEntitlements() {
+  state.entitlements.status = state.entitlements.status === "ready" ? "refreshing" : "loading";
+  state.entitlements.error = null;
   render();
   try {
-    const response = await fetch(
-      `${API_BASE}/billing/status?userId=${encodeURIComponent(USER_ID)}`,
-    );
+    const response = await fetch(`${API_BASE}/me/entitlements`, {
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        "X-User-Id": USER_ID,
+      },
+    });
     if (!response.ok) {
       throw new Error(`status ${response.status}`);
     }
-    state.billing.status = await response.json();
+    const data = await response.json();
+    const entries = Array.isArray(data.entitlements) ? data.entitlements : [];
+    const map = {};
+    entries.forEach((entry) => {
+      if (entry && entry.productId) {
+        map[entry.productId] = entry;
+      }
+    });
+    state.entitlements.map = map;
+    state.entitlements.status = "ready";
+    state.entitlements.error = null;
   } catch (error) {
-    console.error("Failed to fetch billing status", error);
-    state.billing.error = "Unable to refresh billing status.";
+    console.error("Failed to fetch entitlements", error);
+    state.entitlements.status = "error";
+    state.entitlements.error = "Unable to refresh entitlements.";
   } finally {
-    state.billing.loading = false;
     render();
   }
 }
 
-async function submitUpgrade() {
-  const receipt = state.upgrade.receipt.trim();
-  if (!receipt) {
-    state.upgrade.error = "Enter a mock receipt (PRO-* or ELITE-*).";
-    state.upgrade.message = "";
-    render();
+async function startWebCheckout() {
+  if (state.upgrade.submitting) {
     return;
   }
   state.upgrade.submitting = true;
@@ -429,30 +488,52 @@ async function submitUpgrade() {
   state.upgrade.message = "";
   render();
   try {
-    const response = await fetch(`${API_BASE}/billing/verify`, {
+    const response = await fetch(`${API_BASE}/billing/receipt`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Id": USER_ID,
+      },
       body: JSON.stringify({
-        userId: USER_ID,
-        platform: "web-mock",
-        receipt,
+        provider: "stripe",
+        payload: {
+          receipt: `STRIPE-${Date.now()}`,
+          productId: "pro",
+        },
       }),
     });
     if (!response.ok) {
       throw new Error(`status ${response.status}`);
     }
     const data = await response.json();
-    state.upgrade.message = `Activated ${data.tier.toUpperCase()} for ${USER_ID}.`;
-    state.upgrade.receipt = "";
-    await refreshBillingStatus();
+    state.upgrade.message = `You're now on ${data.productId.toUpperCase()} via Stripe Checkout.`;
+    await refreshEntitlements();
   } catch (error) {
-    console.error("Failed to verify receipt", error);
-    state.upgrade.error = "Verification failed. Check the receipt and try again.";
+    console.error("Failed to start checkout", error);
+    state.upgrade.error = "Checkout failed. Try again in a moment.";
   } finally {
     state.upgrade.submitting = false;
     render();
   }
 }
 
+function handleRestore() {
+  fetch(`${API_BASE}/billing/events/restore`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-User-Id": USER_ID,
+    },
+    body: JSON.stringify({ provider: "stripe" }),
+  }).catch(() => undefined);
+  window.open("https://billing.stripe.com/p/session/test", "_blank", "noopener");
+}
+
 render();
-refreshBillingStatus();
+refreshEntitlements();
+
+if (typeof window !== "undefined") {
+  window.addEventListener("focus", () => {
+    void refreshEntitlements();
+  });
+}

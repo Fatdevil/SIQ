@@ -54,6 +54,11 @@ def register(app) -> None:
                 detail={"status": "error", "reason": "invalid payload"},
             )
         user_id = _resolve_user_id(headers=headers, payload=payload)
+        payload_mode = None
+        if isinstance(request.payload, dict):
+            payload_mode = request.payload.get("mode")
+        if payload_mode == "restore":
+            emit_telemetry("restore_clicked", {"userId": user_id, "provider": request.provider})
         emit_telemetry("start_checkout", {"userId": user_id, "provider": request.provider})
         entitlement = _SERVICE.verify_and_grant(request.provider, request.payload, user_id)
         emit_telemetry(
@@ -78,6 +83,27 @@ def register(app) -> None:
         entitlements = [_to_response(ent) for ent in _SERVICE.store.list_for_user(user_id)]
         response = EntitlementListResponse(entitlements=entitlements)
         return response.dict()
+
+    @app.post("/billing/events/feature-blocked")
+    def feature_blocked(payload, headers):
+        feature = payload.get("feature") if isinstance(payload, dict) else None
+        if not feature:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"status": "error", "reason": "feature required"},
+            )
+        user_id = _resolve_user_id(headers=headers, payload=payload)
+        emit_telemetry("feature_blocked", {"userId": user_id, "feature": str(feature)})
+        return {"status": "ok"}
+
+    @app.post("/billing/events/restore")
+    def restore_clicked(payload, headers):
+        user_id = _resolve_user_id(headers=headers, payload=payload)
+        provider = None
+        if isinstance(payload, dict):
+            provider = payload.get("provider")
+        emit_telemetry("restore_clicked", {"userId": user_id, "provider": provider or "unknown"})
+        return {"status": "ok"}
 
     @app.post("/stripe/webhook")
     def stripe_webhook(payload, headers):

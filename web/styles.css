@@ -200,6 +200,35 @@ main {
   gap: 0.75rem;
 }
 
+.feature-section.premium-locked {
+  position: relative;
+  overflow: hidden;
+}
+
+.premium-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.78);
+  color: #f1f5f9;
+  display: grid;
+  place-content: center;
+  gap: 0.75rem;
+  text-align: center;
+  padding: 1.5rem;
+}
+
+.premium-overlay button {
+  justify-self: center;
+  background: #f97316;
+  color: white;
+  border: none;
+  border-radius: 999px;
+  padding: 0.5rem 1.5rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 10px 25px rgba(249, 115, 22, 0.2);
+}
+
 .feature-section h3 {
   margin: 0;
 }
@@ -283,7 +312,7 @@ main {
   padding: 2rem;
   box-shadow: 0 18px 40px rgba(16, 42, 67, 0.12);
   display: grid;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 .upgrade-copy {
@@ -296,36 +325,45 @@ main {
   font-weight: 600;
 }
 
-.upgrade-form {
+.upgrade-benefits {
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #1c7ed6;
   display: grid;
-  gap: 0.75rem;
-}
-
-.upgrade-form label {
+  gap: 0.35rem;
   font-weight: 600;
 }
 
-.upgrade-form input {
-  padding: 0.65rem 0.75rem;
-  border-radius: 12px;
-  border: 1px solid #ced4da;
-  font-size: 1rem;
+.upgrade-benefits li::marker {
+  color: #0b7285;
 }
 
-.upgrade-form button {
-  justify-self: start;
-  background: #1098ad;
+.upgrade-primary {
+  align-self: start;
+  background: linear-gradient(120deg, #1098ad, #38d9a9);
   color: white;
   border: none;
   border-radius: 999px;
-  padding: 0.6rem 1.5rem;
+  padding: 0.75rem 1.75rem;
   font-weight: 700;
   cursor: pointer;
+  box-shadow: 0 15px 30px rgba(56, 217, 169, 0.25);
 }
 
-.upgrade-form button:disabled {
-  opacity: 0.6;
+.upgrade-primary:disabled {
+  opacity: 0.7;
   cursor: progress;
+}
+
+.restore-button {
+  align-self: start;
+  background: transparent;
+  border: 1px solid #ced4da;
+  color: #0b7285;
+  border-radius: 999px;
+  padding: 0.5rem 1.25rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .upgrade-error {
