@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json as json_module
 from typing import Any, Dict, Optional
 
 try:  # pragma: no cover - fallback when server.testing exists
@@ -53,13 +54,38 @@ class TestClient:
         self,
         path: str,
         json: Optional[Dict[str, Any]] = None,
+        data: Optional[bytes | str] = None,
         headers: Optional[Dict[str, Any]] = None,
     ) -> Response:
         if self._delegate is not None:
+            if data is not None:
+                return self._delegate.post(path, data=data, headers=headers)
             return self._delegate.post(path, json=json, headers=headers)
+
+        raw_body: bytes | None = None
+        parsed_json: Dict[str, Any] | None
+        if json is not None:
+            parsed_json = json
+            raw_body = json_module.dumps(json).encode("utf-8")
+        elif data is not None:
+            raw_body = data if isinstance(data, bytes) else data.encode("utf-8")
+            try:
+                maybe_json = json_module.loads(raw_body.decode("utf-8"))
+                parsed_json = maybe_json if isinstance(maybe_json, dict) else {}
+            except Exception:  # pragma: no cover - non-json payload
+                parsed_json = {}
+        else:
+            parsed_json = {}
+            raw_body = b""
+
         try:
             body = self._app.call_handler(
-                "POST", path, json=json or {}, query=None, headers=headers or {}
+                "POST",
+                path,
+                json=parsed_json,
+                query=None,
+                headers=headers or {},
+                raw=raw_body,
             )
         except HTTPException as exc:
             return Response(status_code=exc.status_code, body={"detail": exc.detail})

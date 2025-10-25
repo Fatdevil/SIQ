@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import hashlib
-import hmac
 import importlib
 import json
 import sys
@@ -42,6 +40,12 @@ def _reload_modules() -> None:
             importlib.reload(sys.modules[module_name])
         else:  # pragma: no cover - module may not be imported yet
             importlib.import_module(module_name)
+
+
+def stripe_sig_header(secret: str, raw: bytes, ts: str | None = None) -> str:
+    timestamp = ts or str(int(time.time()))
+    digest = hmac.new(secret.encode("ascii"), timestamp.encode("ascii") + b"." + raw, hashlib.sha256).hexdigest()
+    return f"t={timestamp},v1={digest}"
 
 
 @pytest.fixture()
@@ -95,17 +99,13 @@ def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
             }
         },
     }
-    body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True)
+    raw_body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     timestamp = str(int(time.time()))
-    signature = hmac.new(
-        b"whsec_test",
-        f"{timestamp}.{body}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
     headers = {
-        "Stripe-Signature": f"t={timestamp},v1={signature}",
+        "Stripe-Signature": stripe_sig_header("whsec_test", raw_body, timestamp),
+        "Content-Type": "application/json",
     }
-    response = client.post("/stripe/webhook", json=event_payload, headers=headers)
+    response = client.post("/stripe/webhook", data=raw_body, headers=headers)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
@@ -128,15 +128,10 @@ def test_stripe_webhook_missing_metadata_returns_none(tmp_path) -> None:
     }
     body = json.dumps(event, separators=(",", ":"), sort_keys=True).encode("utf-8")
     timestamp = str(int(time.time()))
-    signature = hmac.new(
-        b"whsec_test",
-        f"{timestamp}.{body.decode('utf-8')}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
     with pytest.raises(HTTPException) as exc:
         service.process_stripe_checkout(
             event,
-            headers={"Stripe-Signature": f"t={timestamp},v1={signature}"},
+            headers={"Stripe-Signature": stripe_sig_header("whsec_test", body, timestamp)},
             raw_body=body,
         )
     assert exc.value.status_code == 400
@@ -152,15 +147,10 @@ def test_stripe_webhook_non_dict_metadata_returns_none(tmp_path) -> None:
     }
     body = json.dumps(event, separators=(",", ":"), sort_keys=True).encode("utf-8")
     timestamp = str(int(time.time()))
-    signature = hmac.new(
-        b"whsec_test",
-        f"{timestamp}.{body.decode('utf-8')}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
     with pytest.raises(HTTPException) as exc:
         service.process_stripe_checkout(
             event,
-            headers={"Stripe-Signature": f"t={timestamp},v1={signature}"},
+            headers={"Stripe-Signature": stripe_sig_header("whsec_test", body, timestamp)},
             raw_body=body,
         )
     assert exc.value.status_code == 400
@@ -177,21 +167,17 @@ def test_stripe_webhook_idempotent(client: TestClient) -> None:
             }
         },
     }
-    body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True)
+    raw_body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
     timestamp = str(int(time.time()))
-    signature = hmac.new(
-        b"whsec_test",
-        f"{timestamp}.{body}".encode("utf-8"),
-        hashlib.sha256,
-    ).hexdigest()
     headers = {
-        "Stripe-Signature": f"t={timestamp},v1={signature}",
+        "Stripe-Signature": stripe_sig_header("whsec_test", raw_body, timestamp),
+        "Content-Type": "application/json",
     }
-    first = client.post("/stripe/webhook", json=event_payload, headers=headers)
+    first = client.post("/stripe/webhook", data=raw_body, headers=headers)
     assert first.status_code == 200
     assert first.json()["status"] == "ok"
 
-    second = client.post("/stripe/webhook", json=event_payload, headers=headers)
+    second = client.post("/stripe/webhook", data=raw_body, headers=headers)
     assert second.status_code == 200
     assert second.json()["status"] == "duplicate"
 

@@ -4,7 +4,7 @@ import os
 from collections.abc import Mapping
 from typing import Any, Callable
 
-from .base import VerificationAdapter, VerificationError, VerificationResult
+from .base import VerificationError, VerificationResult
 from .utils import dev_sandbox_enabled, sandbox_result
 
 

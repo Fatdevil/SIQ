@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from .base import VerificationAdapter, VerificationError, VerificationResult
+from .base import VerificationError, VerificationResult
 from .utils import dev_sandbox_enabled, future_iso, sandbox_result
 
 _SANDBOX_SUBSCRIPTIONS_URL = "https://api.storekit-sandbox.itunes.apple.com/inApps/v1/subscriptions/lookup"

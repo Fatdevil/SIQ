@@ -95,7 +95,7 @@ class EntitlementService:
         event: Mapping[str, Any],
         *,
         headers: Mapping[str, str] | None = None,
-        raw_body: bytes | None = None,
+        raw_body: bytes,
     ) -> WebhookOutcome:
         provider = "stripe"
         increment_metric(provider, "received")
