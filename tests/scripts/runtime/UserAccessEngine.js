@@ -1,65 +1,34 @@
-export type EntitlementRecord = {
-  productId: string;
-  status: 'active' | 'expired' | 'revoked';
-  source: string;
-  createdAt: string;
-  expiresAt?: string | null;
-};
-
-export type EntitlementStatus = 'idle' | 'loading' | 'refreshing' | 'ready' | 'error';
-
-export type EntitlementState = {
-  status: EntitlementStatus;
-  entitlements: Record<string, EntitlementRecord>;
-  error: string | null;
-  lastFetchedAt: number | null;
-};
-
-export type FetchLike = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-
-type FocusTarget = {
-  addEventListener: (type: 'focus', listener: () => void) => void;
-  removeEventListener: (type: 'focus', listener: () => void) => void;
-};
-
-export type EngineOptions = {
-  apiBase: string;
-  userId: string;
-  fetch?: FetchLike;
-  focusTarget?: FocusTarget | null;
-};
-
-export const ENTITLEMENTS = {
+const ENTITLEMENTS = {
   AI_PERSONAS: 'pro',
   ADVANCED_METRICS: 'pro',
   TEAM_DASHBOARD: 'elite',
-} as const;
+};
 
-export const PRODUCTS = {
+const PRODUCTS = {
   PRO: 'pro',
   ELITE: 'elite',
-} as const;
+};
 
-function resolveFetch(options: EngineOptions): FetchLike {
+function resolveFetch(options) {
   if (options.fetch) {
     return options.fetch;
   }
-  const globalFetch = (globalThis as { fetch?: FetchLike }).fetch;
+  const globalFetch = globalThis.fetch;
   if (!globalFetch) {
     throw new Error('fetch implementation required');
   }
   return globalFetch.bind(globalThis);
 }
 
-function normalizeBase(base: string): string {
+function normalizeBase(base) {
   if (!base) {
     return '';
   }
   return base.endsWith('/') ? base.slice(0, -1) : base;
 }
 
-function toMap(records: EntitlementRecord[]): Record<string, EntitlementRecord> {
-  return records.reduce<Record<string, EntitlementRecord>>((acc, record) => {
+function toMap(records) {
+  return records.reduce((acc, record) => {
     if (record && record.productId) {
       acc[record.productId] = record;
     }
@@ -67,42 +36,28 @@ function toMap(records: EntitlementRecord[]): Record<string, EntitlementRecord> 
   }, {});
 }
 
-type Listener = (state: EntitlementState) => void;
-
-export class UserAccessEngine {
-  private readonly apiBase: string;
-
-  private readonly userId: string;
-
-  private readonly fetcher: FetchLike;
-
-  private readonly focusTarget?: FocusTarget | null;
-
-  private state: EntitlementState = {
-    status: 'idle',
-    entitlements: {},
-    error: null,
-    lastFetchedAt: null,
-  };
-
-  private listeners: Set<Listener> = new Set();
-
-  private inFlight: Promise<void> | null = null;
-
-  private focusHandler: (() => void) | null = null;
-
-  constructor(options: EngineOptions) {
+class UserAccessEngine {
+  constructor(options) {
     this.apiBase = normalizeBase(options.apiBase);
     this.userId = options.userId;
     this.fetcher = resolveFetch(options);
     this.focusTarget = options.focusTarget ?? (typeof window !== 'undefined' ? window : null);
+    this.state = {
+      status: 'idle',
+      entitlements: {},
+      error: null,
+      lastFetchedAt: null,
+    };
+    this.listeners = new Set();
+    this.inFlight = null;
+    this.focusHandler = null;
   }
 
-  getState(): EntitlementState {
+  getState() {
     return this.state;
   }
 
-  subscribe(listener: Listener): () => void {
+  subscribe(listener) {
     this.listeners.add(listener);
     listener(this.state);
     return () => {
@@ -110,7 +65,7 @@ export class UserAccessEngine {
     };
   }
 
-  start(): Promise<void> {
+  start() {
     if (this.focusTarget && !this.focusHandler) {
       this.focusHandler = () => {
         void this.refresh();
@@ -118,34 +73,31 @@ export class UserAccessEngine {
       try {
         this.focusTarget.addEventListener('focus', this.focusHandler);
       } catch {
-        // no-op when focus target cannot register listeners
+        // ignore
       }
     }
     return this.refresh();
   }
 
-  stop(): void {
+  stop() {
     if (this.focusTarget && this.focusHandler) {
       try {
         this.focusTarget.removeEventListener('focus', this.focusHandler);
       } catch {
-        // ignore removal issues
+        // ignore
       }
     }
     this.focusHandler = null;
   }
 
-  refresh(): Promise<void> {
+  refresh() {
     if (this.inFlight) {
       return this.inFlight;
     }
-    const nextStatus: EntitlementStatus = this.state.status === 'ready' ? 'refreshing' : 'loading';
-    this.setState({
-      status: nextStatus,
-      error: null,
-    });
+    const nextStatus = this.state.status === 'ready' ? 'refreshing' : 'loading';
+    this.setState({ status: nextStatus, error: null });
     const url = `${this.apiBase}/me/entitlements`;
-    const request: RequestInit = {
+    const request = {
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -158,10 +110,8 @@ export class UserAccessEngine {
         if (!response.ok) {
           throw new Error(`status ${response.status}`);
         }
-        const body = (await response.json()) as {
-          entitlements?: EntitlementRecord[];
-        } | null;
-        const records = Array.isArray(body?.entitlements) ? body!.entitlements : [];
+        const body = await response.json();
+        const records = Array.isArray(body?.entitlements) ? body.entitlements : [];
         this.setState({
           status: 'ready',
           entitlements: toMap(records),
@@ -169,7 +119,7 @@ export class UserAccessEngine {
           lastFetchedAt: Date.now(),
         });
       })
-      .catch((error: unknown) => {
+      .catch((error) => {
         const message = error instanceof Error ? error.message : String(error);
         this.setState({
           status: 'error',
@@ -183,23 +133,24 @@ export class UserAccessEngine {
     return this.inFlight;
   }
 
-  entitlement(productId: string): EntitlementRecord | undefined {
+  entitlement(productId) {
     return this.state.entitlements[productId];
   }
 
-  hasEntitlement(productId: string): boolean {
-    return this.entitlement(productId)?.status === 'active';
+  hasEntitlement(productId) {
+    const ent = this.entitlement(productId);
+    return ent ? ent.status === 'active' : false;
   }
 
-  hasPro(): boolean {
+  hasPro() {
     return this.hasEntitlement(PRODUCTS.PRO) || this.hasEntitlement(PRODUCTS.ELITE);
   }
 
-  hasElite(): boolean {
+  hasElite() {
     return this.hasEntitlement(PRODUCTS.ELITE);
   }
 
-  private setState(patch: Partial<EntitlementState>): void {
+  setState(patch) {
     this.state = { ...this.state, ...patch };
     for (const listener of this.listeners) {
       listener(this.state);
@@ -207,15 +158,9 @@ export class UserAccessEngine {
   }
 }
 
-export function canUse(
-  feature: keyof typeof ENTITLEMENTS,
-  stateOrEngine: EntitlementState | UserAccessEngine,
-): boolean {
+function canUse(feature, stateOrEngine) {
   const required = ENTITLEMENTS[feature];
-  const state =
-    stateOrEngine instanceof UserAccessEngine
-      ? stateOrEngine.getState()
-      : stateOrEngine;
+  const state = stateOrEngine instanceof UserAccessEngine ? stateOrEngine.getState() : stateOrEngine;
   if (required === PRODUCTS.ELITE) {
     return Boolean(state.entitlements[PRODUCTS.ELITE]?.status === 'active');
   }
@@ -227,7 +172,7 @@ export function canUse(
   return true;
 }
 
-export function tierFromState(state: EntitlementState): 'free' | 'pro' | 'elite' {
+function tierFromState(state) {
   if (state.entitlements[PRODUCTS.ELITE]?.status === 'active') {
     return 'elite';
   }
@@ -236,3 +181,5 @@ export function tierFromState(state: EntitlementState): 'free' | 'pro' | 'elite'
   }
   return 'free';
 }
+
+export { UserAccessEngine, canUse, ENTITLEMENTS, PRODUCTS, tierFromState };
