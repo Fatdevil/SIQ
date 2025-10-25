@@ -5,9 +5,9 @@ from typing import List, Tuple
 
 import pytest
 
-np = pytest.importorskip("numpy")
-
 from metrics import angle, ball, carry_v1
+
+np = pytest.importorskip("numpy")
 
 Point = Tuple[int, float, float]
 
