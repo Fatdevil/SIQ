@@ -57,7 +57,15 @@ class FastAPI:
         func = self.dependency_overrides.get(dependency.dependency, dependency.dependency)
         return func()
 
-    def call_handler(self, method: str, path: str, *, json: Dict[str, Any] | None, query: Dict[str, Any] | None) -> Any:
+    def call_handler(
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Dict[str, Any] | None,
+        query: Dict[str, Any] | None,
+        headers: Dict[str, Any] | None = None,
+    ) -> Any:
         handler = self.routes.get((method.upper(), path))
         if handler is None:
             raise KeyError("route not registered")
@@ -68,6 +76,9 @@ class FastAPI:
         for name, param in signature.parameters.items():
             if isinstance(param.default, _Dependency):
                 bound_args[name] = self.resolve_dependency(param.default)
+                continue
+            if name == "headers":
+                bound_args[name] = headers or {}
                 continue
             if method.upper() == "GET":
                 value = None

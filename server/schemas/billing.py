@@ -1,26 +1,40 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, constr
-from typing import Optional, Literal
+from typing import Any, Dict, List, Literal, Optional
 
-Platform = Literal["ios", "android"]
+from pydantic import BaseModel, ValidationError, constr
+
+EntitlementStatus = Literal["active", "expired", "revoked"]
+Provider = Literal["apple", "google", "stripe", "mock", "test"]
 
 
-class VerifyRequest(BaseModel):
+class ReceiptRequest(BaseModel):
+    provider: Provider
+    payload: Dict[str, Any]
+
+
+class EntitlementResponse(BaseModel):
     userId: constr(strip_whitespace=True, min_length=1)
-    platform: Platform
-    receipt: constr(strip_whitespace=True, min_length=1)
-
-
-class VerifyResponse(BaseModel):
-    userId: str
-    tier: Literal["free", "pro", "elite"]
-    provider: str = "mock"
+    productId: constr(strip_whitespace=True, min_length=1)
+    status: EntitlementStatus
+    source: constr(strip_whitespace=True, min_length=1)
     expiresAt: Optional[str] = None
+    createdAt: constr(strip_whitespace=True, min_length=1)
 
 
-class StatusResponse(BaseModel):
-    userId: str
-    tier: Literal["free", "pro", "elite"]
-    provider: Optional[str] = "mock"
-    expiresAt: Optional[str] = None
+class EntitlementListResponse(BaseModel):
+    entitlements: List[EntitlementResponse]
+
+
+class StripeWebhookRequest(BaseModel):
+    type: constr(strip_whitespace=True, min_length=1)
+    data: Dict[str, Any]
+
+
+__all__ = [
+    "EntitlementListResponse",
+    "EntitlementResponse",
+    "ReceiptRequest",
+    "StripeWebhookRequest",
+    "ValidationError",
+]

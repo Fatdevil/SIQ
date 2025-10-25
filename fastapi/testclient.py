@@ -40,7 +40,9 @@ class TestClient:
         if self._delegate is not None:
             return self._delegate.get(path, params=params, headers=headers)
         try:
-            body = self._app.call_handler("GET", path, json=None, query=params or {})
+            body = self._app.call_handler(
+                "GET", path, json=None, query=params or {}, headers=headers or {}
+            )
         except HTTPException as exc:
             return Response(status_code=exc.status_code, body={"detail": exc.detail})
         except KeyError:
@@ -56,7 +58,9 @@ class TestClient:
         if self._delegate is not None:
             return self._delegate.post(path, json=json, headers=headers)
         try:
-            body = self._app.call_handler("POST", path, json=json or {}, query=None)
+            body = self._app.call_handler(
+                "POST", path, json=json or {}, query=None, headers=headers or {}
+            )
         except HTTPException as exc:
             return Response(status_code=exc.status_code, body={"detail": exc.detail})
         except KeyError:
