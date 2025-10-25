@@ -23,7 +23,8 @@ from server.schemas.coach import (
 from server.testing import MiniAPI
 from server import ar_targets
 from server.routes import billing as billing_routes
-from server.security.entitlements import require_tier
+from server.security.entitlements import require_entitlement
+from server.services.telemetry import emit as emit_telemetry
 from siq.coach import (
     CoachChatRequest,
     CoachResponder,
@@ -52,20 +53,21 @@ def _call_handler(
     *,
     json: Dict[str, Any] | None = None,
     query: Dict[str, Any] | None = None,
+    headers: Dict[str, Any] | None = None,
 ):
     handler = app.routes.get((method.upper(), path))
     if handler is None:
         raise KeyError("route not registered")
     if method.upper() == "GET":
-        return handler(query or {}, {})
-    return handler(json or {}, {})
+        return handler(query or {}, headers or {})
+    return handler(json or {}, headers or {})
 
 
 app.get = _register_get  # type: ignore[attr-defined]
 
 
-def _app_call_handler(method: str, path: str, json=None, query=None):
-    return _call_handler(method, path, json=json, query=query)
+def _app_call_handler(method: str, path: str, json=None, query=None, headers=None):
+    return _call_handler(method, path, json=json, query=query, headers=headers)
 
 
 app.call_handler = _app_call_handler  # type: ignore[attr-defined]
@@ -353,5 +355,17 @@ def entitlements_demo_pro(query, headers):
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail={"status": "error", "reason": "userId required"},
         )
-    require_tier("pro")(user_id)
+    try:
+        require_entitlement("pro")(user_id, headers)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {"reason": str(exc)}
+        emit_telemetry(
+            "blocked",
+            {
+                "userId": user_id,
+                "productId": "pro",
+                "reason": detail.get("reason", "requires pro"),
+            },
+        )
+        raise
     return {"ok": True}
