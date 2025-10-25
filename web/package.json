@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "typecheck": "tsc -p tsconfig.app.json --noEmit",
-    "build": "tsc -p tsconfig.app.json && vite build"
+    "build": "tsc -p tsconfig.app.json && vite build",
+    "test": "node --test tests"
   },
   "devDependencies": {
     "typescript": "file:local-packages/typescript",

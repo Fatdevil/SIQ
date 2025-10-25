@@ -30,8 +30,8 @@ const state = {
     hardestShot: [],
     mostHits: [],
   },
-  billing: {
-    status: null,
+  access: {
+    snapshot: normaliseSnapshot(),
     loading: true,
     error: null,
   },
@@ -43,6 +43,8 @@ const state = {
   },
 };
 
+let lastUpgradeViewAt = 0;
+
 const tabs = [
   { id: "metrics", label: "Metrics" },
   { id: "highlights", label: "Highlights" },
@@ -50,17 +52,58 @@ const tabs = [
   { id: "upgrade", label: "Upgrade" },
 ];
 
+async function emitTelemetry(event, props = {}) {
+  try {
+    await fetch(`${API_BASE}/ws/telemetry`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event,
+        userId: USER_ID,
+        platform: "web",
+        timestampMs: Date.now(),
+        ...props,
+      }),
+    });
+  } catch (error) {
+    console.warn("telemetry failed", error);
+  }
+}
+
+function normaliseSnapshot(payload = {}) {
+  const tier = payload.tier ?? "free";
+  const entitlements = payload.entitlements ?? {};
+  const features = payload.features ?? {};
+  const pro = entitlements.pro ?? tier === "pro" || tier === "elite";
+  const elite = entitlements.elite ?? tier === "elite";
+  return {
+    userId: payload.userId ?? USER_ID,
+    tier,
+    provider: payload.provider ?? null,
+    expiresAt: payload.expiresAt ?? null,
+    entitlements: {
+      free: true,
+      pro,
+      elite,
+    },
+    features: {
+      AI_PERSONAS: Boolean(features.AI_PERSONAS ?? pro),
+      ADVANCED_METRICS: Boolean(features.ADVANCED_METRICS ?? pro),
+      TEAM_DASHBOARD: Boolean(features.TEAM_DASHBOARD ?? elite),
+    },
+  };
+}
+
 function tier() {
-  return state.billing.status?.tier ?? "free";
+  return state.access.snapshot.tier;
 }
 
 function isPro() {
-  const current = tier();
-  return current === "pro" || current === "elite";
+  return Boolean(state.access.snapshot.entitlements?.pro);
 }
 
 function canUseArPrecision() {
-  return isPro();
+  return Boolean(state.access.snapshot.features.ADVANCED_METRICS);
 }
 
 function createTabs() {
@@ -83,18 +126,18 @@ function createTabs() {
 function createBillingBanner() {
   const banner = document.createElement("div");
   banner.className = "billing-banner";
-  if (state.billing.loading) {
+  if (state.access.loading) {
     banner.textContent = "Checking subscription…";
     banner.classList.add("pending");
     return banner;
   }
-  if (state.billing.error) {
-    banner.textContent = state.billing.error;
+  if (state.access.error) {
+    banner.textContent = state.access.error;
     banner.classList.add("error");
     return banner;
   }
-  const status = state.billing.status;
-  banner.innerHTML = `Current tier: <strong>${status?.tier?.toUpperCase() ?? "FREE"}</strong>`;
+  const snapshot = state.access.snapshot;
+  banner.innerHTML = `Current tier: <strong>${snapshot.tier?.toUpperCase() ?? "FREE"}</strong>`;
   return banner;
 }
 
@@ -107,6 +150,7 @@ function createUpgradeCTA(feature) {
   button.type = "button";
   button.textContent = "Go to Upgrade";
   button.addEventListener("click", () => {
+    emitTelemetry("feature_blocked", { feature, source: "web" });
     state.tab = "upgrade";
     render();
   });
@@ -155,7 +199,7 @@ function renderCoachPersonas() {
   description.textContent = "Hand-picked coaching voices that personalize drills and match prep.";
   section.appendChild(description);
 
-  if (state.billing.loading) {
+  if (state.access.loading) {
     const loading = document.createElement("p");
     loading.className = "feature-loading";
     loading.textContent = "Loading personas…";
@@ -195,7 +239,7 @@ function renderArPrecision() {
   description.textContent = "Track finishing accuracy with augmented targets on your net.";
   section.appendChild(description);
 
-  if (state.billing.loading) {
+  if (state.access.loading) {
     const loading = document.createElement("p");
     loading.className = "feature-loading";
     loading.textContent = "Loading precision tools…";
@@ -232,7 +276,7 @@ function renderUpgrade() {
     "Use mock receipts (PRO-* or ELITE-*) to simulate App Store or Play Store upgrades while we finalize in-app purchases.";
   container.appendChild(copy);
 
-  if (state.billing.status) {
+  if (state.access.snapshot) {
     const current = document.createElement("p");
     current.className = "upgrade-status";
     current.innerHTML = `Current tier: <strong>${tier().toUpperCase()}</strong>`;
@@ -285,6 +329,16 @@ function renderUpgrade() {
     container.appendChild(message);
   }
 
+  const restore = document.createElement("button");
+  restore.type = "button";
+  restore.className = "restore-button";
+  restore.textContent = "Restore purchases";
+  restore.disabled = state.upgrade.submitting;
+  restore.addEventListener("click", () => {
+    restorePurchases();
+  });
+  container.appendChild(restore);
+
   return container;
 }
 
@@ -312,6 +366,11 @@ function render() {
   } else if (state.tab === "leaderboards") {
     app.appendChild(renderLeaderboards());
   } else if (state.tab === "upgrade") {
+    const now = Date.now();
+    if (now - lastUpgradeViewAt > 500) {
+      lastUpgradeViewAt = now;
+      emitTelemetry("view_upgrade", { source: "web" });
+    }
     app.appendChild(renderUpgrade());
   }
 }
@@ -395,23 +454,24 @@ function renderLeaderboards() {
   return container;
 }
 
-async function refreshBillingStatus() {
-  state.billing.loading = true;
-  state.billing.error = null;
+async function refreshEntitlements() {
+  state.access.loading = true;
+  state.access.error = null;
   render();
   try {
     const response = await fetch(
-      `${API_BASE}/billing/status?userId=${encodeURIComponent(USER_ID)}`,
+      `${API_BASE}/me/entitlements?userId=${encodeURIComponent(USER_ID)}`,
     );
     if (!response.ok) {
       throw new Error(`status ${response.status}`);
     }
-    state.billing.status = await response.json();
+    const data = await response.json();
+    state.access.snapshot = normaliseSnapshot(data);
   } catch (error) {
-    console.error("Failed to fetch billing status", error);
-    state.billing.error = "Unable to refresh billing status.";
+    console.error("Failed to fetch entitlements", error);
+    state.access.error = "Unable to refresh entitlements.";
   } finally {
-    state.billing.loading = false;
+    state.access.loading = false;
     render();
   }
 }
@@ -429,12 +489,13 @@ async function submitUpgrade() {
   state.upgrade.message = "";
   render();
   try {
-    const response = await fetch(`${API_BASE}/billing/verify`, {
+    emitTelemetry("start_checkout", { provider: "stripe" });
+    const response = await fetch(`${API_BASE}/billing/receipt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         userId: USER_ID,
-        platform: "web-mock",
+        platform: "web",
         receipt,
       }),
     });
@@ -444,7 +505,10 @@ async function submitUpgrade() {
     const data = await response.json();
     state.upgrade.message = `Activated ${data.tier.toUpperCase()} for ${USER_ID}.`;
     state.upgrade.receipt = "";
-    await refreshBillingStatus();
+    state.access.snapshot = normaliseSnapshot(data);
+    state.access.error = null;
+    emitTelemetry("receipt_verified", { provider: "stripe", tier: data.tier });
+    render();
   } catch (error) {
     console.error("Failed to verify receipt", error);
     state.upgrade.error = "Verification failed. Check the receipt and try again.";
@@ -454,5 +518,38 @@ async function submitUpgrade() {
   }
 }
 
+async function restorePurchases() {
+  state.upgrade.error = "";
+  state.upgrade.message = "";
+  render();
+  emitTelemetry("restore_clicked", { provider: "stripe" });
+  try {
+    const response = await fetch(`${API_BASE}/billing/receipt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        userId: USER_ID,
+        platform: "web",
+        mode: "restore",
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`status ${response.status}`);
+    }
+    const data = await response.json();
+    state.access.snapshot = normaliseSnapshot(data);
+    state.access.error = null;
+    state.upgrade.message = "Restored your SoccerIQ subscription.";
+  } catch (error) {
+    console.error("Failed to restore purchases", error);
+    state.upgrade.error = "Unable to restore purchases. Try again shortly.";
+  } finally {
+    render();
+  }
+}
+
 render();
-refreshBillingStatus();
+refreshEntitlements();
+window.addEventListener("focus", () => {
+  refreshEntitlements();
+});

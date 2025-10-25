@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   SafeAreaView,
   View,
@@ -9,6 +9,8 @@ import {
   Share,
   TextInput,
   Platform,
+  AppState,
+  AppStateStatus,
 } from "react-native";
 
 type Highlight = {
@@ -27,10 +29,46 @@ type LeaderboardEntry = {
   region: string;
 };
 
-type BillingStatus = {
-  tier: "free" | "pro" | "elite";
-  expiresAt?: string | null;
+type Tier = "free" | "pro" | "elite";
+
+type EntitlementSnapshot = {
+  userId: string;
+  tier: Tier;
+  provider: string | null;
+  expiresAt: string | null;
+  entitlements: { free: boolean; pro: boolean; elite: boolean };
+  features: Record<string, boolean>;
 };
+
+const FEATURE_KEYS = {
+  AI_PERSONAS: "AI_PERSONAS",
+  ADVANCED_METRICS: "ADVANCED_METRICS",
+  TEAM_DASHBOARD: "TEAM_DASHBOARD",
+} as const;
+
+function normaliseSnapshot(payload: Partial<EntitlementSnapshot> | null | undefined): EntitlementSnapshot {
+  const tier = (payload?.tier ?? "free") as Tier;
+  const entitlements = payload?.entitlements ?? {};
+  const features = payload?.features ?? {};
+  const pro = entitlements.pro ?? tier === "pro" || tier === "elite";
+  const elite = entitlements.elite ?? tier === "elite";
+  return {
+    userId: payload?.userId ?? USER_ID,
+    tier,
+    provider: payload?.provider ?? null,
+    expiresAt: payload?.expiresAt ?? null,
+    entitlements: {
+      free: true,
+      pro,
+      elite,
+    },
+    features: {
+      [FEATURE_KEYS.AI_PERSONAS]: Boolean(features[FEATURE_KEYS.AI_PERSONAS] ?? pro),
+      [FEATURE_KEYS.ADVANCED_METRICS]: Boolean(features[FEATURE_KEYS.ADVANCED_METRICS] ?? pro),
+      [FEATURE_KEYS.TEAM_DASHBOARD]: Boolean(features[FEATURE_KEYS.TEAM_DASHBOARD] ?? elite),
+    },
+  };
+}
 
 const API_BASE = (globalThis as any).API_BASE ?? "";
 const USER_ID = (globalThis as any).CURRENT_USER_ID ?? "mock-user";
@@ -167,7 +205,7 @@ const LeaderboardList: React.FC<LeaderboardListProps> = ({ title, data }) => (
 type BillingBannerProps = {
   loading: boolean;
   error: string | null;
-  tier: BillingStatus["tier"];
+  tier: EntitlementSnapshot["tier"];
 };
 
 const BillingBanner: React.FC<BillingBannerProps> = ({ loading, error, tier }) => {
@@ -225,7 +263,9 @@ type UpgradeScreenProps = {
   submitting: boolean;
   message: string;
   error: string;
-  currentTier: BillingStatus["tier"];
+  currentTier: EntitlementSnapshot["tier"];
+  onRestore: () => void;
+  restoring: boolean;
   onClose: () => void;
 };
 
@@ -237,6 +277,8 @@ const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
   message,
   error,
   currentTier,
+  onRestore,
+  restoring,
   onClose,
 }) => {
   return (
@@ -265,6 +307,13 @@ const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
         >
           <Text style={styles.actionButtonText}>{submitting ? "Activating…" : "Activate"}</Text>
         </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.restoreButton, (submitting || restoring) && styles.restoreButtonDisabled]}
+          onPress={onRestore}
+          disabled={submitting || restoring}
+        >
+          <Text style={styles.restoreButtonText}>{restoring ? "Restoring…" : "Restore purchases"}</Text>
+        </TouchableOpacity>
         <TouchableOpacity style={styles.backButton} onPress={onClose}>
           <Text style={styles.backButtonText}>Back to home</Text>
         </TouchableOpacity>
@@ -276,47 +325,80 @@ const UpgradeScreen: React.FC<UpgradeScreenProps> = ({
 const App: React.FC = () => {
   const [tab, setTab] = useState<string>("highlights");
   const [screen, setScreen] = useState<"home" | "upgrade">("home");
-  const [billingStatus, setBillingStatus] = useState<BillingStatus>({ tier: "free" });
-  const [billingLoading, setBillingLoading] = useState<boolean>(true);
-  const [billingError, setBillingError] = useState<string | null>(null);
+  const [entitlements, setEntitlements] = useState<EntitlementSnapshot>(normaliseSnapshot(null));
+  const [accessLoading, setAccessLoading] = useState<boolean>(true);
+  const [accessError, setAccessError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<string>("");
   const [upgradeSubmitting, setUpgradeSubmitting] = useState<boolean>(false);
+  const [restorePending, setRestorePending] = useState<boolean>(false);
   const [upgradeMessage, setUpgradeMessage] = useState<string>("");
   const [upgradeError, setUpgradeError] = useState<string>("");
   const onShare = useShareHandler();
+  const lastUpgradeViewAt = useRef<number>(0);
+  const provider = Platform.OS === "ios" ? "app_store" : "google_play";
 
-  const refreshBillingStatus = useCallback(async () => {
-    setBillingLoading(true);
-    setBillingError(null);
+  const emitTelemetry = useCallback(async (event: string, props: Record<string, unknown> = {}) => {
+    try {
+      await fetch(`${API_BASE}/ws/telemetry`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event,
+          userId: USER_ID,
+          platform: Platform.OS,
+          timestampMs: Date.now(),
+          ...props,
+        }),
+      });
+    } catch (error) {
+      console.warn("telemetry failed", error);
+    }
+  }, []);
+
+  const refreshEntitlements = useCallback(async () => {
+    setAccessLoading(true);
+    setAccessError(null);
     try {
       const response = await fetch(
-        `${API_BASE}/billing/status?userId=${encodeURIComponent(USER_ID)}`,
+        `${API_BASE}/me/entitlements?userId=${encodeURIComponent(USER_ID)}`,
       );
       if (!response.ok) {
         throw new Error(`status ${response.status}`);
       }
-      const data = (await response.json()) as BillingStatus;
-      setBillingStatus(data);
+      const data = (await response.json()) as Partial<EntitlementSnapshot>;
+      setEntitlements(normaliseSnapshot(data));
     } catch (err) {
-      console.error("Failed to fetch billing status", err);
-      setBillingError("Unable to refresh billing status.");
+      console.error("Failed to fetch entitlements", err);
+      setAccessError("Unable to refresh entitlements.");
     } finally {
-      setBillingLoading(false);
+      setAccessLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    refreshBillingStatus();
-  }, [refreshBillingStatus]);
+    refreshEntitlements();
+    const handleAppStateChange = (next: AppStateStatus) => {
+      if (next === "active") {
+        refreshEntitlements();
+      }
+    };
+    const subscription = AppState.addEventListener("change", handleAppStateChange);
+    return () => {
+      subscription.remove();
+    };
+  }, [refreshEntitlements]);
 
-  const isPro = billingStatus.tier === "pro" || billingStatus.tier === "elite";
+  const isPro = entitlements.entitlements.pro;
 
   const personaList = useMemo(() => {
-    if (isPro) {
-      return personaCatalog.map((persona) => ({ ...persona, locked: false }));
-    }
-    return personaCatalog.map((persona, index) => ({ ...persona, locked: index > 0 }));
-  }, [isPro]);
+    const unlockedCount = entitlements.features[FEATURE_KEYS.AI_PERSONAS]
+      ? personaCatalog.length
+      : 1;
+    return personaCatalog.map((persona, index) => ({
+      ...persona,
+      locked: index >= unlockedCount,
+    }));
+  }, [entitlements.features]);
 
   const handleUpgrade = useCallback(async () => {
     const trimmed = receipt.trim();
@@ -329,7 +411,8 @@ const App: React.FC = () => {
     setUpgradeError("");
     setUpgradeMessage("");
     try {
-      const response = await fetch(`${API_BASE}/billing/verify`, {
+      emitTelemetry("start_checkout", { provider });
+      const response = await fetch(`${API_BASE}/billing/receipt`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -341,10 +424,13 @@ const App: React.FC = () => {
       if (!response.ok) {
         throw new Error(`status ${response.status}`);
       }
-      const data = (await response.json()) as BillingStatus;
-      setUpgradeMessage(`Activated ${data.tier.toUpperCase()}.`);
+      const data = (await response.json()) as Partial<EntitlementSnapshot>;
+      setUpgradeMessage(`Activated ${(data.tier ?? "pro").toUpperCase()}.`);
       setReceipt("");
-      await refreshBillingStatus();
+      setEntitlements(normaliseSnapshot(data));
+      setAccessError(null);
+      emitTelemetry("receipt_verified", { provider, tier: data.tier ?? "pro" });
+      await refreshEntitlements();
       setScreen("home");
     } catch (err) {
       console.error("Failed to verify receipt", err);
@@ -352,7 +438,57 @@ const App: React.FC = () => {
     } finally {
       setUpgradeSubmitting(false);
     }
-  }, [receipt, refreshBillingStatus]);
+  }, [provider, receipt, refreshEntitlements, emitTelemetry]);
+
+  const handleRestore = useCallback(async () => {
+    setRestorePending(true);
+    setUpgradeError("");
+    setUpgradeMessage("");
+    emitTelemetry("restore_clicked", { provider });
+    try {
+      const response = await fetch(`${API_BASE}/billing/receipt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: USER_ID,
+          platform: Platform.OS === "ios" ? "ios" : "android",
+          mode: "restore",
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(`status ${response.status}`);
+      }
+      const data = (await response.json()) as Partial<EntitlementSnapshot>;
+      setEntitlements(normaliseSnapshot(data));
+      setAccessError(null);
+      setUpgradeMessage("Restored your subscription.");
+      await refreshEntitlements();
+      setScreen("home");
+    } catch (err) {
+      console.error("Failed to restore purchases", err);
+      setUpgradeError("Restore failed. Try again shortly.");
+    } finally {
+      setRestorePending(false);
+    }
+  }, [provider, refreshEntitlements, emitTelemetry]);
+
+  useEffect(() => {
+    if (screen === "upgrade") {
+      const now = Date.now();
+      if (now - lastUpgradeViewAt.current > 500) {
+        lastUpgradeViewAt.current = now;
+        emitTelemetry("view_upgrade", { source: "mobile" });
+      }
+    }
+  }, [screen, emitTelemetry]);
+
+  const showUpgradeFor = useCallback(
+    (featureId: string) => {
+      emitTelemetry("feature_blocked", { feature: featureId, source: "mobile" });
+      setScreen("upgrade");
+    },
+    [emitTelemetry],
+  );
 
   const leaderboardContent = useMemo(() => {
     if (tab === "hardest") {
@@ -373,7 +509,9 @@ const App: React.FC = () => {
         submitting={upgradeSubmitting}
         message={upgradeMessage}
         error={upgradeError}
-        currentTier={billingStatus.tier}
+        currentTier={entitlements.tier}
+        onRestore={handleRestore}
+        restoring={restorePending}
         onClose={() => setScreen("home")}
       />
     );
@@ -383,7 +521,7 @@ const App: React.FC = () => {
     <SafeAreaView style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent}>
         <Text style={styles.header}>Highlights & Leaderboards</Text>
-        <BillingBanner loading={billingLoading} error={billingError} tier={billingStatus.tier} />
+        <BillingBanner loading={accessLoading} error={accessError} tier={entitlements.tier} />
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Coach Personas</Text>
@@ -401,7 +539,7 @@ const App: React.FC = () => {
             ))}
           </View>
           {!isPro ? (
-            <UpgradeCTA copy="Unlock all coach personas" onPress={() => setScreen("upgrade")} />
+            <UpgradeCTA copy="Unlock all coach personas" onPress={() => showUpgradeFor("coach_personas")} />
           ) : null}
         </View>
 
@@ -417,7 +555,7 @@ const App: React.FC = () => {
               </Text>
             </View>
           ) : (
-            <UpgradeCTA copy="Unlock AR Target precision scoring" onPress={() => setScreen("upgrade")} />
+            <UpgradeCTA copy="Unlock AR Target precision scoring" onPress={() => showUpgradeFor("ar_precision")} />
           )}
         </View>
 
@@ -703,6 +841,17 @@ const styles = StyleSheet.create({
     color: "#001021",
     fontWeight: "700",
     fontSize: 16,
+  },
+  restoreButton: {
+    marginTop: 16,
+    alignSelf: "center",
+  },
+  restoreButtonDisabled: {
+    opacity: 0.6,
+  },
+  restoreButtonText: {
+    color: "#fbbf24",
+    fontWeight: "600",
   },
   errorText: {
     color: "#f87171",
