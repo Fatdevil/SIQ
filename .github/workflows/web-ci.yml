@@ -1,0 +1,65 @@
+name: Web CI
+
+on:
+  push:
+    paths:
+      - 'web/**'
+  pull_request:
+    paths:
+      - 'web/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+          registry-url: 'https://registry.npmjs.org'
+
+      # Optional: guard against corporate/private npm causing 403
+      - name: Force public npm registry (local .npmrc)
+        run: |
+          echo "registry=https://registry.npmjs.org/" > .npmrc
+          echo "always-auth=false" >> .npmrc
+
+      - name: Install deps
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check (app)
+        run: npm run -s typecheck
+
+      - name: Test type check (vitest types)
+        run: |
+          if npm run | grep -q "test:typecheck"; then
+            npm run -s test:typecheck
+          else
+            echo "No test:typecheck script; skipping"
+          fi
+
+      - name: Build
+        run: npm run -s build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: ignore
