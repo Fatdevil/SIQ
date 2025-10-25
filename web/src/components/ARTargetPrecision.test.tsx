@@ -28,7 +28,7 @@ describe('ARTargetPrecision', () => {
           class="link"
           href="/upgrade"
         >
-          Unlock with SoccerIQ Pro
+          Unlock with SoccerIQ Pro or Elite
         </a>
       </div>
     `);

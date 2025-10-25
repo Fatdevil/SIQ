@@ -9,7 +9,7 @@ export default function UpgradeCTA({ feature }: UpgradeCTAProps) {
     <div className="alert">
       🔒 {feature} is a Pro feature.{' '}
       <Link to="/upgrade" className="link">
-        Unlock with SoccerIQ Pro
+        Unlock with SoccerIQ Pro or Elite
       </Link>
     </div>
   );

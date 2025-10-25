@@ -13,7 +13,7 @@ const UpgradeCTA: React.FC<UpgradeCTAProps> = ({ feature, onPress }) => {
         <Text style={styles.emoji}>🔒</Text>
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>{feature} is locked</Text>
-          <Text style={styles.subtitle}>Upgrade to SoccerIQ Pro to unlock this feature.</Text>
+          <Text style={styles.subtitle}>Upgrade to SoccerIQ Pro or Elite to unlock this feature.</Text>
         </View>
         <Text style={styles.cta}>Upgrade</Text>
       </View>
