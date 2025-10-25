@@ -27,6 +27,7 @@ class EntitlementListResponse(BaseModel):
 
 
 class StripeWebhookRequest(BaseModel):
+    id: constr(strip_whitespace=True, min_length=1)
     type: constr(strip_whitespace=True, min_length=1)
     data: Dict[str, Any]
 
