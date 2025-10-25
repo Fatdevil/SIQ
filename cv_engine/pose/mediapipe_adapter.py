@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Iterable
 
-from .base import Keypoint, PoseAdapter, PoseFrame, PoseSummary
+from .base import PoseAdapter, PoseFrame, PoseSummary
 from .utils import compute_tilt, compute_tempo
 
 
