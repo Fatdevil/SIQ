@@ -4,7 +4,7 @@ import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 from server.models import Entitlement
 
@@ -64,6 +64,10 @@ class EntitlementStore:
                     status=entitlement.status,
                     source=entitlement.source,
                     expires_at=entitlement.expires_at,
+                    last_verified_at=entitlement.last_verified_at,
+                    revoked_at=entitlement.revoked_at,
+                    source_status=entitlement.source_status,
+                    meta=entitlement.meta,
                 )
                 entries[idx] = updated.to_dict()
                 break
@@ -81,6 +85,10 @@ class EntitlementStore:
         status: str,
         source: str,
         expires_at: str | None,
+        last_verified_at: str | None = None,
+        revoked_at: str | None = None,
+        source_status: str | None = None,
+        meta: Mapping[str, Any] | None = None,
     ) -> Entitlement:
         normalized = product_id.lower()
         entitlement = Entitlement.new(
@@ -89,6 +97,10 @@ class EntitlementStore:
             status=status,  # type: ignore[arg-type]
             source=source,  # type: ignore[arg-type]
             expires_at=expires_at,
+            last_verified_at=last_verified_at,
+            revoked_at=revoked_at,
+            source_status=source_status,
+            meta=meta,
         )
         return self.upsert(entitlement)
 

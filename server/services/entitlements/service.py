@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Dict
+from datetime import datetime
+from typing import Any, Dict, Mapping as TypingMapping
 
 from fastapi import HTTPException, status
 
 from server.models import Entitlement
+from .config import get_sweep_cron
 from .providers import (
     VerificationAdapter,
     VerificationError,
@@ -16,6 +18,7 @@ from .providers import (
 from .providers.metrics import increment as increment_metric
 from .providers.utils import sandbox_result
 from .store import EntitlementStore
+from .sweeper import EntitlementExpirySweeper
 from .webhooks import WebhookEventStore
 
 
@@ -38,6 +41,8 @@ class EntitlementService:
         self._store = store or EntitlementStore()
         self._adapters = adapters or create_default_adapters()
         self._webhook_store = webhook_store or WebhookEventStore()
+        self._sweeper = EntitlementExpirySweeper(self._store)
+        self._sweep_cron = get_sweep_cron()
 
     @property
     def store(self) -> EntitlementStore:
@@ -46,6 +51,13 @@ class EntitlementService:
     @property
     def webhook_store(self) -> WebhookEventStore:
         return self._webhook_store
+
+    @property
+    def sweep_cron(self) -> str:
+        return self._sweep_cron
+
+    def run_expiry_sweep(self, *, now: datetime | None = None) -> list[Entitlement]:
+        return self._sweeper.sweep(now=now)
 
     # -- Receipt verification -------------------------------------------------
     def verify_and_grant(
@@ -80,14 +92,40 @@ class EntitlementService:
                 expires_at=result.expires_at,
             )
 
+        verified_at = Entitlement._now_iso()
+        revoked_at = result.revoked_at
+        if result.status == "revoked" and not revoked_at:
+            revoked_at = verified_at
+        if result.status != "revoked":
+            revoked_at = None
+
         entitlement = self._store.grant(
             user_id=user_id,
             product_id=result.product_id,
             status=result.status,
             source=provider_key,
             expires_at=result.expires_at,
+            last_verified_at=verified_at,
+            revoked_at=revoked_at,
+            source_status=result.source_status,
+            meta=result.meta,
         )
         return entitlement
+
+    def restore(
+        self,
+        provider: str,
+        payload: TypingMapping[str, Any] | None,
+        user_id: str,
+    ) -> Entitlement:
+        data: Mapping[str, Any]
+        if payload is None:
+            data = {}
+        elif isinstance(payload, Mapping):
+            data = payload
+        else:
+            data = dict(payload)  # type: ignore[arg-type]
+        return self.verify_and_grant(provider, data, user_id)
 
     # -- Stripe webhook -------------------------------------------------------
     def process_stripe_checkout(

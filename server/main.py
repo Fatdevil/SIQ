@@ -369,7 +369,7 @@ def entitlements_demo_pro(query, headers):
             detail={"status": "error", "reason": "userId required"},
         )
     try:
-        require_entitlement("pro")(user_id, headers)
+        access = require_entitlement("pro")(user_id, headers)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {"reason": str(exc)}
         emit_telemetry(
@@ -381,4 +381,4 @@ def entitlements_demo_pro(query, headers):
             },
         )
         raise
-    return {"ok": True}
+    return {"ok": True, "grace": bool(getattr(access, "grace", False))}
