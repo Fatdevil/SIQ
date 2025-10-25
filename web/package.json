@@ -5,9 +5,11 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "build": "tsc -p tsconfig.app.json && vite build",
     "preview": "vite preview",
-    "test": "vitest"
+    "test": "vitest",
+    "test:typecheck": "tsc -p tsconfig.vitest.json --noEmit"
   },
   "dependencies": {
     "react": "18.3.1",
