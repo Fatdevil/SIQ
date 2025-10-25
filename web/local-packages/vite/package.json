@@ -1,0 +1,7 @@
+{
+  "name": "vite",
+  "version": "0.0.0-local",
+  "bin": {
+    "vite": "bin/vite.mjs"
+  }
+}

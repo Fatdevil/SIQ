@@ -1,0 +1,14 @@
+{
+  "name": "siq-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "build": "tsc -p tsconfig.app.json && vite build"
+  },
+  "devDependencies": {
+    "typescript": "file:local-packages/typescript",
+    "vite": "file:local-packages/vite"
+  }
+}
