@@ -1,4 +1,4 @@
-from .service import EntitlementService
+from .service import EntitlementService, WebhookOutcome
 from .store import EntitlementStore
 
-__all__ = ["EntitlementService", "EntitlementStore"]
+__all__ = ["EntitlementService", "EntitlementStore", "WebhookOutcome"]

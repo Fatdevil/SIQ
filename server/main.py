@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import os
 from dataclasses import dataclass
 from time import perf_counter
@@ -13,7 +15,7 @@ from cv_engine.tracking.base import Detection, TrackedDetection
 from cv_engine.tracking.factory import create_tracker
 from metrics import angle, ball, carry_v1, club
 from opentelemetry import trace
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 
 from server.schemas.coach import (
     CoachChatBody,
@@ -54,20 +56,31 @@ def _call_handler(
     json: Dict[str, Any] | None = None,
     query: Dict[str, Any] | None = None,
     headers: Dict[str, Any] | None = None,
+    raw: bytes | None = None,
 ):
     handler = app.routes.get((method.upper(), path))
     if handler is None:
         raise KeyError("route not registered")
     if method.upper() == "GET":
         return handler(query or {}, headers or {})
-    return handler(json or {}, headers or {})
+    signature = inspect.signature(handler)
+    if "request" in signature.parameters and len(signature.parameters) == 1:
+        request = Request(body=raw or b"", headers=headers or {})
+        result = handler(request)
+        if inspect.iscoroutine(result):
+            return asyncio.run(result)
+        return result
+    result = handler(json or {}, headers or {})
+    if inspect.iscoroutine(result):
+        return asyncio.run(result)
+    return result
 
 
 app.get = _register_get  # type: ignore[attr-defined]
 
 
-def _app_call_handler(method: str, path: str, json=None, query=None, headers=None):
-    return _call_handler(method, path, json=json, query=query, headers=headers)
+def _app_call_handler(method: str, path: str, json=None, query=None, headers=None, raw=None):
+    return _call_handler(method, path, json=json, query=query, headers=headers, raw=raw)
 
 
 app.call_handler = _app_call_handler  # type: ignore[attr-defined]

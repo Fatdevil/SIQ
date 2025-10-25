@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import importlib
+import json
 import sys
+import time
 from typing import Iterator
 
 import pytest
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from server.services.entitlements.service import EntitlementService
@@ -15,6 +20,13 @@ from server.services.entitlements.store import EntitlementStore
 MODULES_TO_RELOAD = [
     "server.services.entitlements.store",
     "server.services.entitlements.service",
+    "server.services.entitlements.webhooks",
+    "server.services.entitlements.providers",
+    "server.services.entitlements.providers.apple",
+    "server.services.entitlements.providers.google",
+    "server.services.entitlements.providers.stripe",
+    "server.services.entitlements.providers.utils",
+    "server.services.entitlements.providers.metrics",
     "server.security.entitlements",
     "server.services.telemetry",
     "server.routes.billing",
@@ -30,10 +42,19 @@ def _reload_modules() -> None:
             importlib.import_module(module_name)
 
 
+def stripe_sig_header(secret: str, raw: bytes, ts: str | None = None) -> str:
+    timestamp = ts or str(int(time.time()))
+    digest = hmac.new(secret.encode("ascii"), timestamp.encode("ascii") + b"." + raw, hashlib.sha256).hexdigest()
+    return f"t={timestamp},v1={digest}"
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch) -> Iterator[TestClient]:
     store_path = tmp_path / "entitlements.json"
+    webhook_path = tmp_path / "webhooks.json"
     monkeypatch.setenv("ENTITLEMENTS_STORE_PATH", str(store_path))
+    monkeypatch.setenv("WEBHOOK_EVENTS_STORE_PATH", str(webhook_path))
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test")
     _reload_modules()
 
     from server import main as server_main
@@ -69,6 +90,7 @@ def test_receipt_flow_grants_entitlement_and_lists(client: TestClient) -> None:
 
 def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
     event_payload = {
+        "id": "evt_test_123",
         "type": "checkout.session.completed",
         "data": {
             "object": {
@@ -77,7 +99,13 @@ def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
             }
         },
     }
-    response = client.post("/stripe/webhook", json=event_payload)
+    raw_body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    timestamp = str(int(time.time()))
+    headers = {
+        "Stripe-Signature": stripe_sig_header("whsec_test", raw_body, timestamp),
+        "Content-Type": "application/json",
+    }
+    response = client.post("/stripe/webhook", data=raw_body, headers=headers)
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
@@ -94,20 +122,68 @@ def test_stripe_webhook_missing_metadata_returns_none(tmp_path) -> None:
     store = EntitlementStore(tmp_path / "entitlements.json")
     service = EntitlementService(store)
     event = {
+        "id": "evt_missing_metadata",
         "type": "checkout.session.completed",
         "data": {"object": {"id": "cs_test_missing", "metadata": None}},
     }
-    assert service.process_stripe_checkout(event) is None
+    body = json.dumps(event, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    timestamp = str(int(time.time()))
+    with pytest.raises(HTTPException) as exc:
+        service.process_stripe_checkout(
+            event,
+            headers={"Stripe-Signature": stripe_sig_header("whsec_test", body, timestamp)},
+            raw_body=body,
+        )
+    assert exc.value.status_code == 400
 
 
 def test_stripe_webhook_non_dict_metadata_returns_none(tmp_path) -> None:
     store = EntitlementStore(tmp_path / "entitlements.json")
     service = EntitlementService(store)
     event = {
+        "id": "evt_invalid_metadata",
         "type": "checkout.session.completed",
         "data": {"object": {"id": "cs_test_invalid", "metadata": "not-a-dict"}},
     }
-    assert service.process_stripe_checkout(event) is None
+    body = json.dumps(event, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    timestamp = str(int(time.time()))
+    with pytest.raises(HTTPException) as exc:
+        service.process_stripe_checkout(
+            event,
+            headers={"Stripe-Signature": stripe_sig_header("whsec_test", body, timestamp)},
+            raw_body=body,
+        )
+    assert exc.value.status_code == 400
+
+
+def test_stripe_webhook_idempotent(client: TestClient) -> None:
+    event_payload = {
+        "id": "evt_dupe_1",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_test_dupe",
+                "metadata": {"userId": "dupe-user", "productId": "pro"},
+            }
+        },
+    }
+    raw_body = json.dumps(event_payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    timestamp = str(int(time.time()))
+    headers = {
+        "Stripe-Signature": stripe_sig_header("whsec_test", raw_body, timestamp),
+        "Content-Type": "application/json",
+    }
+    first = client.post("/stripe/webhook", data=raw_body, headers=headers)
+    assert first.status_code == 200
+    assert first.json()["status"] == "ok"
+
+    second = client.post("/stripe/webhook", data=raw_body, headers=headers)
+    assert second.status_code == 200
+    assert second.json()["status"] == "duplicate"
+
+    listing = client.get("/me/entitlements", params={"userId": "dupe-user"})
+    entitlements = listing.json()["entitlements"]
+    assert len(entitlements) == 1
 
 
 def test_feature_blocked_requires_feature(client: TestClient) -> None:

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 
 from server.schemas.billing import (
     EntitlementListResponse,
@@ -106,7 +107,21 @@ def register(app) -> None:
         return {"status": "ok"}
 
     @app.post("/stripe/webhook")
-    def stripe_webhook(payload, headers):
+    async def stripe_webhook(request: Request):
+        raw_body = await request.body()
+        headers = dict(request.headers)
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"status": "error", "reason": "invalid payload"},
+            )
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"status": "error", "reason": "invalid payload"},
+            )
         try:
             event = StripeWebhookRequest.parse_obj(payload)
         except ValidationError:
@@ -114,17 +129,31 @@ def register(app) -> None:
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail={"status": "error", "reason": "invalid payload"},
             )
-        entitlement = _SERVICE.process_stripe_checkout(event.dict())
-        if entitlement is None:
-            return {"status": "ignored"}
-        emit_telemetry(
-            "entitlement_granted",
-            {
-                "userId": entitlement.user_id,
-                "productId": entitlement.product_id,
-                "status": entitlement.status,
-                "source": entitlement.source,
-                "origin": "stripe_webhook",
-            },
-        )
-        return {"status": "ok", "entitlement": _to_response(entitlement)}
+        try:
+            outcome = _SERVICE.process_stripe_checkout(
+                event.dict(), headers=headers, raw_body=raw_body
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                detail={"status": "error", "reason": "stripe processing failed"},
+            ) from exc
+
+        if outcome.status == "granted" and outcome.entitlement is not None:
+            entitlement = outcome.entitlement
+            emit_telemetry(
+                "entitlement_granted",
+                {
+                    "userId": entitlement.user_id,
+                    "productId": entitlement.product_id,
+                    "status": entitlement.status,
+                    "source": entitlement.source,
+                    "origin": "stripe_webhook",
+                },
+            )
+            return {"status": "ok", "entitlement": _to_response(entitlement)}
+        if outcome.status == "duplicate":
+            return {"status": "duplicate"}
+        return {"status": "ignored"}

@@ -1,7 +1,9 @@
 """Minimal FastAPI-compatible surface for offline testing."""
 from __future__ import annotations
 
+import asyncio
 import inspect
+import json as json_module
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -26,6 +28,19 @@ def Depends(dependency: Callable[[], Any]) -> _Dependency:
 class Query:
     default: Any
     enum: Optional[Tuple[str, ...]] = None
+
+class Request:
+    def __init__(self, *, body: bytes, headers: Dict[str, Any] | None = None) -> None:
+        self._body = body
+        self.headers = headers or {}
+
+    async def body(self) -> bytes:
+        return self._body
+
+    async def json(self) -> Any:
+        if not self._body:
+            return {}
+        return json_module.loads(self._body.decode("utf-8"))
 
 
 class FastAPI:
@@ -65,6 +80,7 @@ class FastAPI:
         json: Dict[str, Any] | None,
         query: Dict[str, Any] | None,
         headers: Dict[str, Any] | None = None,
+        raw: bytes | None = None,
     ) -> Any:
         handler = self.routes.get((method.upper(), path))
         if handler is None:
@@ -76,6 +92,9 @@ class FastAPI:
         for name, param in signature.parameters.items():
             if isinstance(param.default, _Dependency):
                 bound_args[name] = self.resolve_dependency(param.default)
+                continue
+            if name == "request":
+                bound_args[name] = Request(body=raw or b"", headers=headers or {})
                 continue
             if name == "headers":
                 bound_args[name] = headers or {}
@@ -95,4 +114,7 @@ class FastAPI:
                 else:
                     bound_args[name] = json.get(name) if json else None
 
-        return handler(**bound_args)
+        result = handler(**bound_args)
+        if inspect.iscoroutine(result):  # pragma: no cover - async compatibility
+            return asyncio.run(result)
+        return result
