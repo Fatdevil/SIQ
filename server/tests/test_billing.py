@@ -8,6 +8,9 @@ import pytest
 
 from fastapi.testclient import TestClient
 
+from server.services.entitlements.service import EntitlementService
+from server.services.entitlements.store import EntitlementStore
+
 
 MODULES_TO_RELOAD = [
     "server.services.entitlements.store",
@@ -85,3 +88,23 @@ def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
     assert listing.status_code == 200
     entitlements = listing.json()["entitlements"]
     assert entitlements[0]["productId"] == "pro"
+
+
+def test_stripe_webhook_missing_metadata_returns_none(tmp_path) -> None:
+    store = EntitlementStore(tmp_path / "entitlements.json")
+    service = EntitlementService(store)
+    event = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_test_missing", "metadata": None}},
+    }
+    assert service.process_stripe_checkout(event) is None
+
+
+def test_stripe_webhook_non_dict_metadata_returns_none(tmp_path) -> None:
+    store = EntitlementStore(tmp_path / "entitlements.json")
+    service = EntitlementService(store)
+    event = {
+        "type": "checkout.session.completed",
+        "data": {"object": {"id": "cs_test_invalid", "metadata": "not-a-dict"}},
+    }
+    assert service.process_stripe_checkout(event) is None

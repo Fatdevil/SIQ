@@ -177,15 +177,15 @@ class EntitlementService:
         event_type = event.get("type")
         if event_type != "checkout.session.completed":
             return None
-        data = event.get("data", {}).get("object", {})
-        metadata = data.get("metadata", {}) if isinstance(data, dict) else {}
+        data = event.get("data")
+        obj = data.get("object") if isinstance(data, dict) else {}
+        metadata = obj.get("metadata") if isinstance(obj, dict) else {}
+        if metadata is None or not isinstance(metadata, dict):
+            metadata = {}
         product_id = metadata.get("productId") or metadata.get("product_id")
         user_id = metadata.get("userId") or metadata.get("user_id")
         if not product_id or not user_id:
-            raise HTTPException(
-                status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail={"status": "error", "reason": "metadata requires userId and productId"},
-            )
+            return None
         payload = {"productId": product_id, "receipt": data.get("id", "stripe")}
         return self.verify_and_grant("stripe", payload, str(user_id))
 
