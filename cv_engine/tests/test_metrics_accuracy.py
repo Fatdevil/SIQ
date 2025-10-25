@@ -5,7 +5,7 @@ import math
 from cv_engine.pose.base import Keypoint, PoseFrame
 from cv_engine.pose.mediapipe_adapter import MediapipePoseAdapter
 from cv_engine.pose.movenet_adapter import MoveNetPoseAdapter
-from metrics import angle, ball, carry_v1, club
+from metrics import angle, ball, carry_v1
 
 
 def test_ball_speed_within_tolerance():
