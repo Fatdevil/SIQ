@@ -9,11 +9,13 @@ from server.schemas.billing import (
     EntitlementListResponse,
     EntitlementResponse,
     ReceiptRequest,
+    RestoreRequest,
     StripeWebhookRequest,
     ValidationError,
 )
 from server.security.entitlements import get_service
 from server.services.telemetry import emit as emit_telemetry
+from server.services.entitlements.config import get_grace_days
 
 _SERVICE = get_service()
 
@@ -40,7 +42,10 @@ def _resolve_user_id(
 
 
 def _to_response(entitlement) -> Dict[str, Any]:
-    response = EntitlementResponse.parse_obj(entitlement.to_dict())
+    payload = entitlement.to_dict()
+    grace_days = get_grace_days()
+    payload["grace"] = entitlement.status != "active" and entitlement.within_grace(grace_days)
+    response = EntitlementResponse.parse_obj(payload)
     return response.dict()
 
 
@@ -68,6 +73,33 @@ def register(app) -> None:
         )
         emit_telemetry(
             "entitlement_granted",
+            {
+                "userId": user_id,
+                "productId": entitlement.product_id,
+                "status": entitlement.status,
+                "source": entitlement.source,
+            },
+        )
+        return _to_response(entitlement)
+
+    @app.post("/billing/restore")
+    def restore(payload, headers):
+        try:
+            request = RestoreRequest.parse_obj(payload)
+        except ValidationError:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail={"status": "error", "reason": "invalid payload"},
+            )
+        user_id = _resolve_user_id(headers=headers, payload=payload)
+        emit_telemetry("restore_attempt", {"userId": user_id, "provider": request.provider})
+        entitlement = _SERVICE.restore(
+            request.provider,
+            request.platform_specific_payload,
+            user_id,
+        )
+        emit_telemetry(
+            "entitlement_restored",
             {
                 "userId": user_id,
                 "productId": entitlement.product_id,

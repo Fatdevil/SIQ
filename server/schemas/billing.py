@@ -20,10 +20,20 @@ class EntitlementResponse(BaseModel):
     source: constr(strip_whitespace=True, min_length=1)
     expiresAt: Optional[str] = None
     createdAt: constr(strip_whitespace=True, min_length=1)
+    lastVerifiedAt: constr(strip_whitespace=True, min_length=1)
+    revokedAt: Optional[str] = None
+    sourceStatus: Optional[str] = None
+    meta: Dict[str, Any] = {}
+    grace: bool = False
 
 
 class EntitlementListResponse(BaseModel):
     entitlements: List[EntitlementResponse]
+
+
+class RestoreRequest(BaseModel):
+    provider: Provider
+    platform_specific_payload: Optional[Dict[str, Any]] = None
 
 
 class StripeWebhookRequest(BaseModel):
@@ -35,6 +45,7 @@ class StripeWebhookRequest(BaseModel):
 __all__ = [
     "EntitlementListResponse",
     "EntitlementResponse",
+    "RestoreRequest",
     "ReceiptRequest",
     "StripeWebhookRequest",
     "ValidationError",

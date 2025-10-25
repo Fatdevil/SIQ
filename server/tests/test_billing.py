@@ -6,6 +6,7 @@ import importlib
 import json
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Iterator
 
 import pytest
@@ -19,7 +20,9 @@ from server.services.entitlements.store import EntitlementStore
 
 MODULES_TO_RELOAD = [
     "server.services.entitlements.store",
+    "server.services.entitlements.config",
     "server.services.entitlements.service",
+    "server.services.entitlements.sweeper",
     "server.services.entitlements.webhooks",
     "server.services.entitlements.providers",
     "server.services.entitlements.providers.apple",
@@ -76,16 +79,83 @@ def test_receipt_flow_grants_entitlement_and_lists(client: TestClient) -> None:
     data = response.json()
     assert data["productId"] == "pro"
     assert data["status"] == "active"
+    assert data["grace"] is False
 
     listing = client.get("/me/entitlements", params={"userId": "user-free"})
     assert listing.status_code == 200
     entitlements = listing.json()["entitlements"]
     assert len(entitlements) == 1
     assert entitlements[0]["productId"] == "pro"
+    assert entitlements[0]["grace"] is False
 
     allowed = client.get("/entitlements/demo-pro", params={"userId": "user-free"})
     assert allowed.status_code == 200
-    assert allowed.json()["ok"] is True
+    body = allowed.json()
+    assert body["ok"] is True
+    assert body["grace"] is False
+
+
+def test_entitlement_grace_allows_recent_verification(client: TestClient) -> None:
+    from server.security import entitlements as ent_security
+
+    service = ent_security.get_service()
+    grace_user = "grace-user"
+    service.store.grant(
+        user_id=grace_user,
+        product_id="pro",
+        status="expired",
+        source="mock",
+        expires_at=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace("+00:00", "Z"),
+    )
+
+    allowed = client.get("/entitlements/demo-pro", params={"userId": grace_user})
+    assert allowed.status_code == 200
+    assert allowed.json() == {"ok": True, "grace": True}
+
+
+def test_entitlement_revoked_blocks_access(client: TestClient) -> None:
+    from server.security import entitlements as ent_security
+
+    service = ent_security.get_service()
+    revoked_user = "revoked-user"
+    service.store.grant(
+        user_id=revoked_user,
+        product_id="pro",
+        status="revoked",
+        source="mock",
+        expires_at=None,
+    )
+
+    denied = client.get("/entitlements/demo-pro", params={"userId": revoked_user})
+    assert denied.status_code == 403
+
+
+def test_entitlement_grace_expires_after_window(client: TestClient) -> None:
+    from server.security import entitlements as ent_security
+
+    service = ent_security.get_service()
+    stale_user = "stale-user"
+    entitlement = service.store.grant(
+        user_id=stale_user,
+        product_id="pro",
+        status="expired",
+        source="mock",
+        expires_at=None,
+    )
+    stale_verified = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat().replace("+00:00", "Z")
+    refreshed = entitlement.update(
+        status="expired",
+        source=entitlement.source,
+        expires_at=entitlement.expires_at,
+        last_verified_at=stale_verified,
+        revoked_at=None,
+        source_status=entitlement.source_status,
+        meta=entitlement.meta,
+    )
+    service.store.upsert(refreshed)
+
+    denied = client.get("/entitlements/demo-pro", params={"userId": stale_user})
+    assert denied.status_code == 403
 
 
 def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
@@ -116,6 +186,7 @@ def test_stripe_webhook_grants_entitlement(client: TestClient) -> None:
     assert listing.status_code == 200
     entitlements = listing.json()["entitlements"]
     assert entitlements[0]["productId"] == "pro"
+    assert entitlements[0]["grace"] is False
 
 
 def test_stripe_webhook_missing_metadata_returns_none(tmp_path) -> None:
@@ -184,6 +255,22 @@ def test_stripe_webhook_idempotent(client: TestClient) -> None:
     listing = client.get("/me/entitlements", params={"userId": "dupe-user"})
     entitlements = listing.json()["entitlements"]
     assert len(entitlements) == 1
+
+
+def test_restore_endpoint_reverifies_entitlement(client: TestClient) -> None:
+    response = client.post(
+        "/billing/restore",
+        json={
+            "provider": "mock",
+            "platform_specific_payload": {"productId": "pro", "receipt": "PRO-RESTORE"},
+        },
+        headers={"x-user-id": "restore-user"},
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["productId"] == "pro"
+    assert body["status"] == "active"
+    assert body["grace"] is False
 
 
 def test_feature_blocked_requires_feature(client: TestClient) -> None:

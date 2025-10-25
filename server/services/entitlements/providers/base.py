@@ -14,6 +14,9 @@ class VerificationResult:
     user_id: str
     status: str
     expires_at: str | None
+    source_status: str | None = None
+    meta: Mapping[str, Any] | None = None
+    revoked_at: str | None = None
 
 
 class VerificationAdapter(Protocol):
